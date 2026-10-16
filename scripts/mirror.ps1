@@ -549,10 +549,14 @@ $html = @'
 <!doctype html><html><head><meta charset="utf-8"><title>AVD Mirror</title>
 <style>
  html,body{margin:0;height:100%;background:#0d1117;color:#c9d1d9;font:12px system-ui,sans-serif}
- #wrap{display:flex;flex-direction:column;height:100%}
- /* Stage wraps the image so the power key can be positioned against the guest
-    screen itself rather than the window, same as the soft keys below. */
- #stage{position:relative;flex:1;min-height:0;display:flex}
+ /* #wrap is the containing block for the absolutely positioned soft-key bar, and
+     carries the black that shows through wherever the screen is letterboxed. */
+  #wrap{display:flex;flex-direction:column;height:100%;position:relative;background:#000}
+  /* Stage wraps the image so the power key can be positioned against the guest
+     screen itself rather than the window, same as the soft keys below. It is the
+     only flex child now that the bar is absolute, so it takes the full height and
+     the screen letterboxes inside it rather than being sized to leave room. */
+  #stage{position:relative;flex:1;min-height:0;display:flex}
  #bar{padding:6px 10px;background:#161b22;display:flex;gap:10px;align-items:center;border-bottom:1px solid #30363d;flex-wrap:wrap}
  #m{flex:1;min-height:0;object-fit:contain;background:#000;cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
  #st{color:#f85149}
@@ -569,7 +573,15 @@ $html = @'
      the side letterbox here matches the letterbox directly above it and the two
      read as one continuous black surround instead of a stripe butting into the
      panel. --imx/--imw come from layoutNav(), so the strip tracks the screen. */
-  #navbar{position:relative;flex:0 0 auto;height:38px;background:#000;--imx:0px;--imw:100%}
+  /* The bar's top edge is pinned to the bottom of the displayed guest screen via
+       `top`, set by layoutNav(). It used to sit in normal flow below the stage, so
+       its top edge was the *stage's* bottom edge - which only coincided with the
+       screen's once the stage happened to grow to fit exactly. Any vertical
+       letterbox left a black band between the screen and the bar.
+       `top` is absolute rather than a negative margin: a margin would change the
+       space the stage occupies, which changes the letterbox, which changes the
+       margin - a feedback loop that never settles. */
+    #navbar{position:absolute;left:0;right:0;top:var(--imy,0px);height:38px;background:#000;--imx:0px;--imw:100%}
   #navbar::before{content:'';position:absolute;top:0;bottom:0;left:var(--imx);width:var(--imw);
    background:#161b22;border-top:1px solid #30363d;z-index:0}
   #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%);z-index:1;
@@ -781,22 +793,37 @@ const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 // displayed width (--imw) and the displayed height (--imh). The keys anchor to
 // the bar, the power key to the stage, so each element gets the values relative
 // to its own box.
-function layoutNav(){
-  const nb=navbar.getBoundingClientRect();
-  const r=img.getBoundingClientRect();
-  const iw=img.naturalWidth||GW, ih=img.naturalHeight||GH;
-  const s=Math.min(r.width/iw,r.height/ih)||1;
-  const dw=iw*s, dh=ih*s;
-  const ox=r.left+(r.width-dw)/2, oy=r.top+(r.height-dh)/2;   // image box, viewport
-  navbar.style.setProperty('--imx',(ox-nb.left)+'px');
-  navbar.style.setProperty('--imw',dw+'px');
-  const sg=stage.getBoundingClientRect();
-  stage.style.setProperty('--imx',(ox-sg.left)+'px');
-  stage.style.setProperty('--imw',dw+'px');
-  stage.style.setProperty('--imy',(oy-sg.top)+'px');
-  stage.style.setProperty('--imh',dh+'px');
-}
-window.addEventListener('resize',layoutNav);
+  function layoutNav(){
+    const nb=navbar.getBoundingClientRect();
+    const r=img.getBoundingClientRect();
+    const iw=img.naturalWidth||GW, ih=img.naturalHeight||GH;
+    const s=Math.min(r.width/iw,r.height/ih)||1;
+    const dw=iw*s, dh=ih*s;
+    const ox=r.left+(r.width-dw)/2, oy=r.top+(r.height-dh)/2;   // image box, viewport
+    navbar.style.setProperty('--imx',(ox-nb.left)+'px');
+    navbar.style.setProperty('--imw',dw+'px');
+    // Pin the bar's top edge to the bottom of the displayed guest screen. The bar
+    // is absolutely positioned in #wrap, so its offset is measured from #wrap's
+    // top - not from the bar's own box, which would feed back into its position.
+    const wp=navbar.offsetParent.getBoundingClientRect();
+    navbar.style.setProperty('--imy',(oy+dh-wp.top)+'px');
+    const sg=stage.getBoundingClientRect();
+    stage.style.setProperty('--imx',(ox-sg.left)+'px');
+    stage.style.setProperty('--imw',dw+'px');
+    stage.style.setProperty('--imy',(oy-sg.top)+'px');
+    stage.style.setProperty('--imh',dh+'px');
+  }
+// Re-measure after the browser has committed the new layout, not during the
+// resize event itself: the stage's height only settles on the next frame, so
+// measuring inline can read the *previous* geometry and leave the soft-key bar
+// pinned to a stale position (it then overlaps the screen by that difference).
+// Idempotent, so running it on every frame-sized change is safe.
+let rafNav=0;
+window.addEventListener('resize',()=>{
+  layoutNav();
+  cancelAnimationFrame(rafNav);
+  rafNav=requestAnimationFrame(()=>{layoutNav();requestAnimationFrame(layoutNav);});
+});
 
 // map a client point inside the (object-fit:contain) image to guest px
 function gp(e){
