@@ -140,7 +140,10 @@ async function loadPage() {
   // Build the origin in one place: a `replace(':', '://')` on `HOST:PORT` would
     // match the wrong colon and produce the unparseable "127.0.0.1://8777".
     const base = `http://${HOST}:${PORT}`;
-    const res = await fetch(`${base}/`, { cache: 'no-store' });
+    // Cache-bust the URL as well as sending no-store: this fetch runs in the
+    // extension host, whose HTTP cache is separate from the webview's, and a
+    // stale copy here silently pins old CSS in the panel across server restarts.
+    const res = await fetch(`${base}/?t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     let html = await res.text();
     // The webview supplies its own <head> (CSP, base styles), but the mirror's CSS
@@ -170,13 +173,17 @@ class MirrorViewProvider {
   /** Set HTML on a webview once the page is available, else show the hint. */
   async paint(target) {
     try {
-      if (!this._page) this._page = await loadPage();
-      target.webview.html = this._html(this._page);
-    } catch (e) {
-      output.appendLine(`paint failed: ${e && e.message ? e.message : e}`);
-      target.webview.html = this._html(null);
+        // Always re-fetch. The page embeds the mirror's CSS, and this provider is
+        // asked to paint on every visibility change, so a cached copy here pins
+        // whatever CSS was current at first load into the panel for the rest of
+        // the session - edits to mirror.ps1 appeared to have no effect at all.
+        this._page = await loadPage();
+        target.webview.html = this._html(this._page);
+      } catch (e) {
+        output.appendLine(`paint failed: ${e && e.message ? e.message : e}`);
+        target.webview.html = this._html(null);
+      }
     }
-  }
 
   resolveWebviewView(webviewView) {
       try {
@@ -274,6 +281,46 @@ class MirrorViewProvider {
                     report('inlined-timeout', 'no frame');
                   }
                 }, 8000);
+        // Layout probe. The panel is a different host from a browser tab - different
+        // width, different gutter, and the compact media query can apply - so
+        // measuring in a browser says nothing about the panel. This reports the
+        // real numbers from whatever host renders it, on every resize, so a
+        // detached or clipped key can be read straight off the log.
+        function measureKeys(tag) {
+          const stage = document.getElementById('stage');
+          if (!stage) return;
+          const cs = getComputedStyle(stage);
+          const num = v => parseFloat(cs.getPropertyValue(v)) || 0;
+          const sb = stage.getBoundingClientRect();
+          const imx = num('--imx'), imw = num('--imw');
+          const screenL = sb.left + imx, screenR = screenL + imw;
+          const g = id => {
+            const el = document.getElementById(id);
+            return el ? el.getBoundingClientRect() : null;
+          };
+          const up = g('volup'), dn = g('voldown'), pw = g('pwr');
+          if (!up || !dn || !pw) return;
+          const f = n => Math.round(n * 100) / 100;
+          report('keys', tag
+            + ' doc=' + document.documentElement.clientWidth + 'x' + document.documentElement.clientHeight
+            + ' gutter=' + f(imx)
+            + ' volW=' + f(up.width)
+            + ' volUpGap=' + f(screenL - up.right)
+            + ' volDnGap=' + f(screenL - dn.right)
+            + ' volPairGap=' + f(up.top - dn.bottom)
+            + ' pwrGap=' + f(pw.left - screenR)
+            + ' volClipL=' + f(sb.left - up.left)
+            + ' pwrClipR=' + f(pw.right - sb.right)
+            + (f(screenL - up.right) > 1 || f(screenL - dn.right) > 1 ? '  <<< DETACHED' : '')
+            + (sb.left - up.left > 1 || pw.right - sb.right > 1 ? '  <<< CLIPPED' : ''));
+        }
+        setTimeout(() => measureKeys('t1s'), 1000);
+        setTimeout(() => measureKeys('t3s'), 3000);
+        let rt;
+        window.addEventListener('resize', () => {
+          clearTimeout(rt);
+          rt = setTimeout(() => measureKeys('resize'), 250);
+        });
       </script>
       ${page || ''}
       </body>

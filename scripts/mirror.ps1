@@ -1060,9 +1060,12 @@ while ($true) {
       if ($jpeg) { Send-Bytes $stream '200 OK' 'image/jpeg' $jpeg }
       else       { Send-Bytes $stream '503 Service Unavailable' 'text/plain' ([byte[]][char[]]'capture failed') }
     }
-    elseif ($path -eq '/' -or $path -like '/index*') {
-      Send-Bytes $stream '200 OK' 'text/html; charset=utf-8' ([System.Text.Encoding]::UTF8.GetBytes($html))
-    }
+    elseif ($path -eq '/' -or $path -like '/index*' -or (($path -split '\?')[0]) -eq '/') {
+          # The bare path is compared with any query string stripped: the extension
+          # cache-busts the page URL (?t=...) so a stale copy cannot pin old CSS in
+          # the webview after mirror.ps1 changes.
+          Send-Bytes $stream '200 OK' 'text/html; charset=utf-8' ([System.Text.Encoding]::UTF8.GetBytes($html))
+        }
     elseif ($path -like '/touch*') {
       # /touch?p=id:x:y,id:x:y  -- raw pointer state in guest px; empty p lifts all
           Reap-StaleSlots
