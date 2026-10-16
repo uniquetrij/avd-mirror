@@ -589,33 +589,40 @@ $html = @'
   #navbar button[data-nav="back"]{left:calc(var(--imx) + var(--imw) * 0.25)}
   #navbar button[data-nav="home"]{left:calc(var(--imx) + var(--imw) * 0.5)}
   #navbar button[data-nav="recents"]{left:calc(var(--imx) + var(--imw) * 0.75)}
-   /* Short viewports (the VS Code side panel is wide but only ~130 px tall) must
-      give their space to the screen, not to chrome: the toolbar is a portrait
-      phone squeezed by wrapping into three rows, which left the screen itself as a
-      ~26x56 px sliver. Collapse everything to single-row, smaller controls. */
-   @media (max-height:520px){
-    #bar{padding:1px 5px;gap:5px;flex-wrap:nowrap;overflow:hidden;white-space:nowrap;font-size:10px}
-    #bar b{display:none}
-    #bar button{padding:0 4px;font-size:10px;line-height:12px}
-    #navbar{height:26px}
-    #navbar button{width:22px;height:22px;border-radius:5px}
-    #navbar .ico{width:9px;height:9px}
-    #pwr,.volkey{width:22px;height:44px;font-size:13px}
-    #volup{top:calc(var(--imy) + var(--imh) * 0.4 - 22px)}
-    #voldown{top:calc(var(--imy) + var(--imh) * 0.4 + 22px)}
-   }
-  /* Power and the two volume keys sit in the letterbox, flush against the
-     screen's side edges, so they never cover guest content. --imx/--imw are the
-     same letterbox offset and displayed width the soft keys use, and --imh the
-     displayed height, so they track the guest screen at any window size. A narrow
-     window can leave too little gutter, so each falls back to the edge it hugs. */
-  #pwr,.volkey{position:absolute;transform:translateY(-50%);
-   width:28px;height:84px;padding:0;z-index:2;
-   display:flex;align-items:center;justify-content:center;
-   background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
-   font:16px system-ui,sans-serif;cursor:pointer;line-height:1}
-  #pwr{left:calc(var(--imx) + var(--imw));top:calc(var(--imy) + var(--imh) * 0.4);
-   max-width:calc(100% - var(--imx) - var(--imw))}
+   /* Power and the two volume keys sit in the letterbox, flush against the
+        screen's side edges, so they never cover guest content. --imx/--imw are the
+        same letterbox offset and displayed width the soft keys use, and --imh the
+        displayed height, so they track the guest screen at any window size. A narrow
+        window can leave too little gutter, so each falls back to the edge it hugs.
+
+        This base rule must stay ABOVE the max-height media query below. Both declare
+        #pwr,.volkey at equal specificity, so source order decides: with the base rule
+        last, its 28x84 size overrode the compact 22x44 and the compact layout silently
+        did nothing. */
+     #pwr,.volkey{position:absolute;transform:translateY(-50%);
+      width:28px;height:84px;padding:0;z-index:2;
+      display:flex;align-items:center;justify-content:center;
+      background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
+      font:16px system-ui,sans-serif;cursor:pointer;line-height:1}
+     /* Power anchors the same way the volume keys now do - the edge that must touch
+        the screen is pinned by position, and the key keeps its full width - so all
+        three behave identically on resize and none of them detaches. */
+     #pwr{left:calc(var(--imx) + var(--imw));top:calc(var(--imy) + var(--imh) * 0.4)}
+      /* Short viewports (the VS Code side panel is wide but only ~130 px tall) must
+         give their space to the screen, not to chrome: the toolbar is a portrait
+         phone squeezed by wrapping into three rows, which left the screen itself as a
+         ~26x56 px sliver. Collapse everything to single-row, smaller controls. */
+      @media (max-height:520px){
+       #bar{padding:1px 5px;gap:5px;flex-wrap:nowrap;overflow:hidden;white-space:nowrap;font-size:10px}
+       #bar b{display:none}
+       #bar button{padding:0 4px;font-size:10px;line-height:12px}
+       #navbar{height:26px}
+       #navbar button{width:22px;height:22px;border-radius:5px}
+       #navbar .ico{width:9px;height:9px}
+       #pwr,.volkey{width:22px;height:44px;font-size:13px}
+       #volup{top:calc(var(--imy) + var(--imh) * 0.4 - 22px)}
+       #voldown{top:calc(var(--imy) + var(--imh) * 0.4 + 22px)}
+      }
   /* Left pair sits in the left letterbox: the key's right edge hugs the screen's
        left edge, mirroring how Power's left edge hugs the right edge. The two are
        offset by half their height (42 px) either side of the 40% line Power sits
