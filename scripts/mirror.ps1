@@ -589,6 +589,21 @@ $html = @'
   #navbar button[data-nav="back"]{left:calc(var(--imx) + var(--imw) * 0.25)}
   #navbar button[data-nav="home"]{left:calc(var(--imx) + var(--imw) * 0.5)}
   #navbar button[data-nav="recents"]{left:calc(var(--imx) + var(--imw) * 0.75)}
+   /* Short viewports (the VS Code side panel is wide but only ~130 px tall) must
+      give their space to the screen, not to chrome: the toolbar is a portrait
+      phone squeezed by wrapping into three rows, which left the screen itself as a
+      ~26x56 px sliver. Collapse everything to single-row, smaller controls. */
+   @media (max-height:520px){
+    #bar{padding:1px 5px;gap:5px;flex-wrap:nowrap;overflow:hidden;white-space:nowrap;font-size:10px}
+    #bar b{display:none}
+    #bar button{padding:0 4px;font-size:10px;line-height:12px}
+    #navbar{height:26px}
+    #navbar button{width:22px;height:22px;border-radius:5px}
+    #navbar .ico{width:9px;height:9px}
+    #pwr,.volkey{width:22px;height:44px;font-size:13px}
+    #volup{top:calc(var(--imy) + var(--imh) * 0.4 - 22px)}
+    #voldown{top:calc(var(--imy) + var(--imh) * 0.4 + 22px)}
+   }
   /* Power and the two volume keys sit in the letterbox, flush against the
      screen's side edges, so they never cover guest content. --imx/--imw are the
      same letterbox offset and displayed width the soft keys use, and --imh the

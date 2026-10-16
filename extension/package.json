@@ -40,6 +40,11 @@
         "title": "Open Panel",
         "category": "AVD Mirror"
       },
+            {
+              "command": "avdMirror.openInEditor",
+              "title": "Open Full Screen (Editor Tab)",
+              "category": "AVD Mirror"
+            },
       {
         "command": "avdMirror.start",
         "title": "Start Server",

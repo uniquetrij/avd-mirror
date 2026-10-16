@@ -111,8 +111,9 @@ async function startServer() {
       if (await isUp()) {
         output.appendLine('mirror server ready');
         vscode.commands.executeCommand('avdMirror.reload');
-        return;
-      }
+              if (editorPanel) editorPanel.webview.html = provider._html();
+              return;
+            }
     }
     output.appendLine('mirror server did not come up; see output');
     vscode.window.showWarningMessage('AVD Mirror server did not start - see the AVD Mirror output channel.');
@@ -165,7 +166,8 @@ class MirrorViewProvider {
 
   reload() {
     if (this._view) this._view.webview.html = this._html();
-  }
+      if (this._editor) this._editor.webview.html = this._html();
+    }
 
   _html() {
       // Allow the loopback mirror origin to be framed and called; deny the rest.
@@ -241,13 +243,33 @@ class MirrorViewProvider {
 
 function activate(context) {
   const provider = new MirrorViewProvider();
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('avdMirror.view', provider),
-    vscode.commands.registerCommand('avdMirror.open', () => {
-      vscode.commands.executeCommand('avdMirror.view.focus');
-      startServer();
-    }),
-    vscode.commands.registerCommand('avdMirror.start', startServer),
+    // A supervision failure must never escape into a view provider or panel:
+    // that is what produces "An error occurred while loading view".
+    const safeStart = () => { startServer().catch(e => output.appendLine(`startServer: ${e}`)); };
+
+    // A portrait phone screen is unreadable in a sidebar panel that is wide but
+    // only ~130 px tall, so offer the same mirror full-height in an editor tab too.
+    let editorPanel;
+    const openInEditor = () => {
+      if (editorPanel) { editorPanel.reveal(vscode.ViewColumn.Active); return; }
+      editorPanel = vscode.window.createWebviewPanel(
+        'avdMirror.editor', 'AVD Mirror',
+        vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true }
+      );
+      editorPanel.webview.html = provider._html();
+      provider._editor = editorPanel;
+      editorPanel.onDidDispose(() => { editorPanel = undefined; provider._editor = undefined; });
+      safeStart();
+    };
+
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider('avdMirror.view', provider),
+      vscode.commands.registerCommand('avdMirror.openInEditor', openInEditor),
+      vscode.commands.registerCommand('avdMirror.open', () => {
+        vscode.commands.executeCommand('avdMirror.view.focus');
+        safeStart();
+      }),
+      vscode.commands.registerCommand('avdMirror.start', startServer),
     vscode.commands.registerCommand('avdMirror.stop', stopServer),
     vscode.commands.registerCommand('avdMirror.restart', () => {
       stopServer();
