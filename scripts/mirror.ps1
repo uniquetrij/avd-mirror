@@ -1009,11 +1009,12 @@ document.addEventListener('visibilitychange',()=>{ if(document.hidden) liftAll()
 '@
 
 function Send-Bytes([System.Net.Sockets.NetworkStream]$s, [string]$status, [string]$contentType, [byte[]]$body) {
-  # frame-ancestors lets the VS Code extension embed this page in a webview
-  # panel. The listener is bound to loopback only, so allowing any parent frame
-  # exposes nothing beyond 127.0.0.1. No X-Frame-Options is sent, which is what
-  # actually permits framing.
-  $head = "HTTP/1.1 $status`r`nContent-Type: $contentType`r`nContent-Length: $($body.Length)`r`nCache-Control: no-store`r`nContent-Security-Policy: frame-ancestors *`r`nConnection: close`r`n`r`n"
+  # frame-ancestors lets the page be embedded; the CORS headers let it also be
+  # *inlined* into a VS Code webview, whose origin is not 127.0.0.1 and so cannot
+  # read loopback responses without them. The listener is bound to loopback
+  # only, so the exposure is other local processes (and any web page the user
+  # happens to visit that reads 127.0.0.1:8777) - never the network.
+  $head = "HTTP/1.1 $status`r`nContent-Type: $contentType`r`nContent-Length: $($body.Length)`r`nCache-Control: no-store`r`nContent-Security-Policy: frame-ancestors *`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: *`r`nConnection: close`r`n`r`n"
   $hb = [System.Text.Encoding]::ASCII.GetBytes($head)
   $s.Write($hb, 0, $hb.Length)
   if ($body -and $body.Length -gt 0) { $s.Write($body, 0, $body.Length) }

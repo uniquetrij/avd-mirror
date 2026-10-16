@@ -109,9 +109,8 @@ async function startServer() {
     for (let tries = 0; tries < 40; tries++) {
       await new Promise(r => setTimeout(r, 250));
       if (await isUp()) {
-        output.appendLine('mirror server ready');
-        vscode.commands.executeCommand('avdMirror.reload');
-              if (editorPanel) editorPanel.webview.html = provider._html();
+              output.appendLine('mirror server ready');
+              vscode.commands.executeCommand('avdMirror.reload');
               return;
             }
     }
@@ -136,119 +135,158 @@ function stopServer() {
   catch (e) { output.appendLine(`stop failed: ${e}`); }
 }
 
+/** Fetch the mirror page and make it self-contained for a webview. */
+async function loadPage() {
+  // Build the origin in one place: a `replace(':', '://')` on `HOST:PORT` would
+    // match the wrong colon and produce the unparseable "127.0.0.1://8777".
+    const base = `http://${HOST}:${PORT}`;
+    const res = await fetch(`${base}/`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let html = await res.text();
+    // The webview supplies its own <head> (CSP, base styles), but the mirror's CSS
+    // lives in the page's <head> - slicing the body alone would drop every style and
+    // leave an unstyled page. Carry the page's <style> blocks over into the body.
+    const styles = (html.match(/<style[\s\S]*?<\/style>/gi) || []).join('\n');
+    const b = html.indexOf('<body>');
+    const e = html.lastIndexOf('</body>');
+    let bodyHtml = '';
+    if (b >= 0 && e > b) bodyHtml = html.slice(b + 6, e);
+    html = styles + bodyHtml;
+    // The page addresses its own endpoints with root-relative paths ('/touch',
+    // '/input', '/gsize', '/frame.jpg'). Inlined into a webview those would
+    // resolve against the webview origin and 404, so point them at the server.
+    html = html.replace(/(['"])\/(touch|input|gsize|frame\.jpg)\b/g, `$1${base}/$2`);
+    return html;
+}
+
 /** Webview view provider for the activity-bar panel. */
 class MirrorViewProvider {
   constructor() {
     this._view = undefined;
+    this._editor = undefined;
+    this._page = null;
+  }
+
+  /** Set HTML on a webview once the page is available, else show the hint. */
+  async paint(target) {
+    try {
+      if (!this._page) this._page = await loadPage();
+      target.webview.html = this._html(this._page);
+    } catch (e) {
+      output.appendLine(`paint failed: ${e && e.message ? e.message : e}`);
+      target.webview.html = this._html(null);
+    }
   }
 
   resolveWebviewView(webviewView) {
-    this._view = webviewView;
-    webviewView.webview.options = { enableScripts: true };
-    webviewView.webview.html = this._html();
-      // Never let supervision break the view: startServer already swallows its own
-      // errors, and anything escaping it would blank the whole panel.
-      const safeStart = () => { startServer().catch(e => output.appendLine(`startServer: ${e}`)); };
-      webviewView.webview.onDidReceiveMessage(msg => {
-        if (msg && msg.type === 'frame') {
-          const line = `[frame] ${msg.state} ${msg.detail}`;
-          output.appendLine(line);
-          try { fs.appendFileSync(FRAME_LOG, line + '\n'); } catch (e) { /* best effort */ }
-        }
-      });
-      // The panel is usually opened while the server is still down, so start it
-      // the first time the view becomes visible.
-      safeStart();
-      webviewView.onDidChangeVisibility(() => {
-        if (webviewView.visible) safeStart();
-      });
+      try {
+        this._view = webviewView;
+        webviewView.webview.options = { enableScripts: true };
+        // Never let supervision break the view: startServer already swallows its own
+        // errors, and anything escaping it would blank the whole panel.
+        // Must *return* the promise: callers chain .then() onto it, and a block-bodied
+        // arrow with no return yields undefined -> "Cannot read properties of
+        // undefined (reading 'then')", which blanks the whole panel.
+        const safeStart = () => startServer().catch(e => output.appendLine(`startServer: ${e}`));
+        webviewView.webview.onDidReceiveMessage(msg => {
+          if (msg && msg.type === 'frame') {
+            const line = `[frame] ${msg.state} ${msg.detail}`;
+            output.appendLine(line);
+            try { fs.appendFileSync(FRAME_LOG, line + '\n'); } catch (e) { /* best effort */ }
+          }
+        });
+        const paint = () => Promise.resolve(safeStart()).then(() => this.paint(webviewView))
+          .catch(e => output.appendLine(`paint: ${e}`));
+        paint();
+        webviewView.onDidChangeVisibility(() => { if (webviewView.visible) paint(); });
+      } catch (e) {
+        // Last line of defence: an exception here is what VS Code reports as
+        // "An error occurred while loading view". Show something rather than fail.
+        output.appendLine(`resolveWebviewView: ${e && e.stack ? e.stack : e}`);
+        try { webviewView.webview.html = this._html(null); } catch (_) { /* give up */ }
+      }
     }
 
   reload() {
-    if (this._view) this._view.webview.html = this._html();
-      if (this._editor) this._editor.webview.html = this._html();
-    }
+    this._page = null;
+    if (this._view) this.paint(this._view);
+    if (this._editor) this.paint(this._editor);
+  }
 
-  _html() {
-      // Allow the loopback mirror origin to be framed and called; deny the rest.
-      // (127.0.0.1 is a potentially-trustworthy origin, so this is not blocked as
-      // mixed content even though the webview itself is a secure context.)
-      const csp = [
-        "default-src 'none'",
-        `frame-src http://${HOST}:${PORT}`,
-        `connect-src http://${HOST}:${PORT} http://${HOST}:8778`,
-        `img-src data: blob: http://${HOST}:8778`,
-        "style-src 'unsafe-inline'",
-        "script-src 'unsafe-inline'",
-      ].join('; ');
-      return `<!DOCTYPE html>
-  <html lang="en">
-  <head>
-  <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="${csp}">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    html,body{margin:0;height:100%;background:#000;overflow:hidden}
-    iframe{border:0;width:100%;height:100%;display:block;background:#000}
-    #hint{position:absolute;inset:0;display:flex;flex-direction:column;gap:.6em;align-items:center;
-          justify-content:center;color:#8b949e;font:12px var(--vscode-font-family);text-align:center;
-          padding:1rem;background:#000}
-    #hint a{color:#4daafc;cursor:pointer}
-    code{background:#1b1f24;padding:.1em .4em;border-radius:3px}
-  </style>
-  </head>
-  <body>
-  <div id="hint">
-    <div id="msg">Connecting to the mirror server on port ${PORT}...</div>
-    <a id="fallback" href="${MIRROR_URL}" target="_blank">Open in browser</a>
-  </div>
-  <script>
-    const vscodeApi = acquireVsCodeApi();
-    const hint = document.getElementById('hint');
-    const msg = document.getElementById('msg');
-    function report(state, detail) {
-      try { vscodeApi.postMessage({ type: 'frame', state, detail: String(detail || '') }); } catch (e) {}
-    }
-
-    // Build the frame only after this listener is attached. Declaring the iframe
-    // in markup and binding 'load' later in a later script is a race: on a warm
-    // cache the load event can fire before the listener exists, leaving the hint
-    // up forever over a perfectly good frame.
-    const f = document.createElement('iframe');
-    f.title = 'AVD Mirror';
-    f.addEventListener('load', () => {
-      hint.style.display = 'none';
-      const r = f.getBoundingClientRect();
-      report('loaded', 'doc=' + document.documentElement.clientWidth + 'x' + document.documentElement.clientHeight +
-                          ' iframe=' + Math.round(r.width) + 'x' + Math.round(r.height) +
-                          ' cw=' + (f.contentWindow ? 'yes' : 'no'));
-    });
-    f.addEventListener('error', () => {
-      msg.textContent = 'The mirror server did not respond.';
-      report('error', 'iframe error');
-    });
-    document.body.appendChild(f);
-    f.src = '${MIRROR_URL}';
-    report('created', f.src);
-
-    // If nothing has loaded shortly after start, say so rather than spinning.
-    setTimeout(() => {
-      if (hint.style.display !== 'none') {
-        msg.textContent = 'Still waiting. Check the AVD Mirror output channel, or open in browser.';
-        report('timeout', 'no load event');
-      }
-    }, 6000);
-  </script>
-  </body>
-  </html>`;
-    }
+  _html(page) {
+        const base = `http://${HOST}:${PORT}`;
+        // The page is inlined rather than iframed. A webview iframe to a loopback
+        // http origin reported a successful load and a contentWindow here, but
+        // never painted - while the same page renders fine in a plain browser. The
+        // webview's own origin is not 127.0.0.1, so the inlined copy needs CORS
+        // from mirror.ps1 (it now sends Access-Control-Allow-Origin), and its
+        // relative endpoints are rewritten to absolute URLs below.
+        const csp = [
+          "default-src 'none'",
+          `connect-src ${base} http://${HOST}:8778`,
+          `img-src ${base} data: blob: http://${HOST}:8778`,
+          "style-src 'unsafe-inline'",
+          "script-src 'unsafe-inline'",
+        ].join('; ');
+        return `<!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="${csp}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      html,body{margin:0;height:100%;background:#000;overflow:hidden}
+      #hint{position:absolute;inset:0;display:flex;flex-direction:column;gap:.6em;align-items:center;
+            justify-content:center;color:#8b949e;font:12px var(--vscode-font-family);text-align:center;
+            padding:1rem;background:#000;z-index:9}
+      #hint a{color:#4daafc;cursor:pointer}
+    </style>
+    </head>
+    <body>
+      <div id="hint">
+        <div id="msg">Loading the mirror from port ${PORT}...</div>
+        <a id="fallback" href="${MIRROR_URL}" target="_blank">Open in browser</a>
+      </div>
+      <script>
+        const vscodeApi = acquireVsCodeApi();
+        const hint = document.getElementById('hint');
+        const msg = document.getElementById('msg');
+        function report(state, detail) {
+          try { vscodeApi.postMessage({ type: 'frame', state, detail: String(detail || '') }); } catch (e) {}
+        }
+        // The inlined page paints into its own <img id="m">. Watch that element
+                // rather than an Image() of our own: an unsourced Image never fires load,
+                // so the hint would sit on top of a perfectly good mirror forever.
+                let shown = false;
+                function checkFrame() {
+                  const el = document.getElementById('m');
+                  if (el && el.naturalWidth > 0) {
+                    if (!shown) { shown = true; report('inlined-ok', el.naturalWidth + 'x' + el.naturalHeight); }
+                    hint.style.display = 'none';
+          }
+                }
+                const watch = setInterval(checkFrame, 250);
+                window.addEventListener('DOMContentLoaded', () => report('booted', 'doc=' + document.documentElement.clientWidth + 'x' + document.documentElement.clientHeight));
+                setTimeout(() => {
+                  clearInterval(watch);
+                  if (!shown) {
+                    msg.textContent = 'No frames yet. Check the AVD Mirror output channel, or open in browser.';
+                    report('inlined-timeout', 'no frame');
+                  }
+                }, 8000);
+      </script>
+      ${page || ''}
+      </body>
+      </html>`;
+        }
 }
 
 function activate(context) {
   const provider = new MirrorViewProvider();
     // A supervision failure must never escape into a view provider or panel:
     // that is what produces "An error occurred while loading view".
-    const safeStart = () => { startServer().catch(e => output.appendLine(`startServer: ${e}`)); };
+    // Must return the promise, for the same reason as in resolveWebviewView.
+    const safeStart = () => startServer().catch(e => output.appendLine(`startServer: ${e}`));
 
     // A portrait phone screen is unreadable in a sidebar panel that is wide but
     // only ~130 px tall, so offer the same mirror full-height in an editor tab too.
@@ -259,10 +297,11 @@ function activate(context) {
         'avdMirror.editor', 'AVD Mirror',
         vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true }
       );
-      editorPanel.webview.html = provider._html();
+      editorPanel.webview.html = provider._html(null);
       provider._editor = editorPanel;
       editorPanel.onDidDispose(() => { editorPanel = undefined; provider._editor = undefined; });
-      safeStart();
+            safeStart().then(() => provider.paint(editorPanel))
+              .catch(e => output.appendLine(`openInEditor paint: ${e}`));
     };
 
     context.subscriptions.push(
