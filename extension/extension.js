@@ -7,7 +7,12 @@
 const vscode = require('vscode');
 const { spawn } = require('child_process');
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
+
+// Frame load diagnostics land here so a blank panel can be explained without
+// needing the webview devtools open.
+const FRAME_LOG = path.join(os.tmpdir(), 'avd-mirror-frame.log');
 
 const PORT = 8777;
 const HOST = '127.0.0.1';
@@ -143,6 +148,13 @@ class MirrorViewProvider {
       // Never let supervision break the view: startServer already swallows its own
       // errors, and anything escaping it would blank the whole panel.
       const safeStart = () => { startServer().catch(e => output.appendLine(`startServer: ${e}`)); };
+      webviewView.webview.onDidReceiveMessage(msg => {
+        if (msg && msg.type === 'frame') {
+          const line = `[frame] ${msg.state} ${msg.detail}`;
+          output.appendLine(line);
+          try { fs.appendFileSync(FRAME_LOG, line + '\n'); } catch (e) { /* best effort */ }
+        }
+      });
       // The panel is usually opened while the server is still down, so start it
       // the first time the view becomes visible.
       safeStart();
@@ -156,39 +168,75 @@ class MirrorViewProvider {
   }
 
   _html() {
-    // Only the loopback mirror origin may be framed; everything else is denied.
-    const csp = [
-      "default-src 'none'",
-      `frame-src http://${HOST}:${PORT}`,
-      "style-src 'unsafe-inline'",
-      "img-src data:",
-    ].join('; ');
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="${csp}">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-  html,body{margin:0;height:100%;background:#000;overflow:hidden}
-  iframe{border:0;width:100%;height:100%;display:block;background:#000}
-  #hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-        color:#8b949e;font:12px var(--vscode-font-family);text-align:center;padding:1rem;pointer-events:none}
-</style>
-</head>
-<body>
-<iframe src="${MIRROR_URL}" title="AVD Mirror"></iframe>
-<div id="hint">Waiting for the mirror server on port ${PORT}...<br>AVD Mirror: Start Server</div>
-<script>
-  // Clear the hint as soon as the framed page actually paints.
-  const f = document.querySelector('iframe');
-  f.addEventListener('load', () => {
-    document.getElementById('hint').style.display = 'none';
-  });
-</script>
-</body>
-</html>`;
-  }
+      // Allow the loopback mirror origin to be framed and called; deny the rest.
+      // (127.0.0.1 is a potentially-trustworthy origin, so this is not blocked as
+      // mixed content even though the webview itself is a secure context.)
+      const csp = [
+        "default-src 'none'",
+        `frame-src http://${HOST}:${PORT}`,
+        `connect-src http://${HOST}:${PORT} http://${HOST}:8778`,
+        `img-src data: blob: http://${HOST}:8778`,
+        "style-src 'unsafe-inline'",
+        "script-src 'unsafe-inline'",
+      ].join('; ');
+      return `<!DOCTYPE html>
+  <html lang="en">
+  <head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="${csp}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    html,body{margin:0;height:100%;background:#000;overflow:hidden}
+    iframe{border:0;width:100%;height:100%;display:block;background:#000}
+    #hint{position:absolute;inset:0;display:flex;flex-direction:column;gap:.6em;align-items:center;
+          justify-content:center;color:#8b949e;font:12px var(--vscode-font-family);text-align:center;
+          padding:1rem;background:#000}
+    #hint a{color:#4daafc;cursor:pointer}
+    code{background:#1b1f24;padding:.1em .4em;border-radius:3px}
+  </style>
+  </head>
+  <body>
+  <div id="hint">
+    <div id="msg">Connecting to the mirror server on port ${PORT}...</div>
+    <a id="fallback" href="${MIRROR_URL}" target="_blank">Open in browser</a>
+  </div>
+  <script>
+    const vscodeApi = acquireVsCodeApi();
+    const hint = document.getElementById('hint');
+    const msg = document.getElementById('msg');
+    function report(state, detail) {
+      try { vscodeApi.postMessage({ type: 'frame', state, detail: String(detail || '') }); } catch (e) {}
+    }
+
+    // Build the frame only after this listener is attached. Declaring the iframe
+    // in markup and binding 'load' later in a later script is a race: on a warm
+    // cache the load event can fire before the listener exists, leaving the hint
+    // up forever over a perfectly good frame.
+    const f = document.createElement('iframe');
+    f.title = 'AVD Mirror';
+    f.addEventListener('load', () => {
+      hint.style.display = 'none';
+      report('loaded', f.contentWindow ? 'contentWindow present' : 'no contentWindow');
+    });
+    f.addEventListener('error', () => {
+      msg.textContent = 'The mirror server did not respond.';
+      report('error', 'iframe error');
+    });
+    document.body.appendChild(f);
+    f.src = '${MIRROR_URL}';
+    report('created', f.src);
+
+    // If nothing has loaded shortly after start, say so rather than spinning.
+    setTimeout(() => {
+      if (hint.style.display !== 'none') {
+        msg.textContent = 'Still waiting. Check the AVD Mirror output channel, or open in browser.';
+        report('timeout', 'no load event');
+      }
+    }, 6000);
+  </script>
+  </body>
+  </html>`;
+    }
 }
 
 function activate(context) {
