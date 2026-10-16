@@ -218,7 +218,10 @@ class MirrorViewProvider {
     f.title = 'AVD Mirror';
     f.addEventListener('load', () => {
       hint.style.display = 'none';
-      report('loaded', f.contentWindow ? 'contentWindow present' : 'no contentWindow');
+      const r = f.getBoundingClientRect();
+      report('loaded', 'doc=' + document.documentElement.clientWidth + 'x' + document.documentElement.clientHeight +
+                          ' iframe=' + Math.round(r.width) + 'x' + Math.round(r.height) +
+                          ' cw=' + (f.contentWindow ? 'yes' : 'no'));
     });
     f.addEventListener('error', () => {
       msg.textContent = 'The mirror server did not respond.';
