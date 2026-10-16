@@ -6,7 +6,6 @@
 
 const vscode = require('vscode');
 const { spawn } = require('child_process');
-const http = require('http');
 const path = require('path');
 const fs = require('fs');
 
@@ -42,38 +41,48 @@ function findMirrorScript() {
   return candidates.find(p => fs.existsSync(p));
 }
 
-function isUp(cb) {
-  // /gsize is the cheapest liveness probe the server offers: no capture, no
-  // touch state to disturb. There is no /health on this port.
-  const req = http.get(`${HOST}:${PORT}/gsize`, res => {
-    res.resume();
-    cb(res.statusCode === 200);
-  });
-  req.on('error', () => cb(false));
-  req.setTimeout(700, () => { req.destroy(); cb(false); });
+// /gsize is the cheapest liveness probe the server offers: no capture, no touch
+// state to disturb. There is no /health on this port.
+//
+// This deliberately uses the global fetch rather than Node's http module: VS Code
+// patches http/https with its own proxy agent, and that patched `get` throws
+// "TypeError: Invalid URL" from inside the extension host, which surfaced as
+// "An error occurred while loading view". fetch is not patched that way.
+// Failures are swallowed and reported as "not up" - a probe must never be able
+// to take the panel down with it.
+async function isUp() {
+  try {
+    const res = await fetch(`http://${HOST}:${PORT}/gsize`, {
+      signal: AbortSignal.timeout(700),
+      cache: 'no-store',
+    });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
 }
 
 function psExe() {
   return process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
 }
 
-function startServer() {
+async function startServer() {
   if (starting) return;
-  isUp(async up => {
-    if (up) {
-      output.appendLine('mirror server already listening');
+  if (await isUp()) {
+    output.appendLine('mirror server already listening');
+    return;
+  }
+
+  starting = true;
+  try {
+    const script = findMirrorScript();
+    if (!script) {
+      vscode.window.showErrorMessage(
+        'AVD Mirror: mirror.ps1 not found. Open the folder containing .github/skills/mirror-emulator.'
+      );
+      output.appendLine('mirror.ps1 not found in any known location');
       return;
     }
-    starting = true;
-        const script = findMirrorScript();
-        if (!script) {
-      starting = false;
-          vscode.window.showErrorMessage(
-            'AVD Mirror: mirror.ps1 not found. Open the folder containing .github/skills/mirror-emulator.'
-          );
-          output.appendLine('mirror.ps1 not found in any known location');
-          return;
-        }
     output.appendLine(`starting: ${script} -Port ${PORT}`);
     // Hidden, like the documented manual launch, so the mirror never steals
     // focus or opens a console window over the editor.
@@ -88,31 +97,26 @@ function startServer() {
     serverProc.on('exit', code => {
       output.appendLine(`mirror server exited (${code})`);
       serverProc = null;
-      starting = false;
     });
 
     // Poll for readiness so we can refresh the panel the moment frames exist,
     // instead of leaving a dead iframe in front of the user.
-    let tries = 0;
-    const tick = () => {
-      isUp(ok => {
-        if (ok) {
-          starting = false;
-          output.appendLine('mirror server ready');
-          vscode.commands.executeCommand('avdMirror.reload');
-          return;
-        }
-        if (++tries > 40) {
-          starting = false;
-          output.appendLine('mirror server did not come up; see output');
-          vscode.window.showWarningMessage('AVD Mirror server did not start - see the AVD Mirror output channel.');
-          return;
-        }
-        setTimeout(tick, 250);
-      });
-    };
-    setTimeout(tick, 400);
-  });
+    for (let tries = 0; tries < 40; tries++) {
+      await new Promise(r => setTimeout(r, 250));
+      if (await isUp()) {
+        output.appendLine('mirror server ready');
+        vscode.commands.executeCommand('avdMirror.reload');
+        return;
+      }
+    }
+    output.appendLine('mirror server did not come up; see output');
+    vscode.window.showWarningMessage('AVD Mirror server did not start - see the AVD Mirror output channel.');
+  } catch (e) {
+    output.appendLine(`start failed: ${e && e.stack ? e.stack : e}`);
+    vscode.window.showErrorMessage(`AVD Mirror: failed to start - ${e && e.message ? e.message : e}`);
+  } finally {
+    starting = false;
+  }
 }
 
 function stopServer() {
@@ -136,13 +140,16 @@ class MirrorViewProvider {
     this._view = webviewView;
     webviewView.webview.options = { enableScripts: true };
     webviewView.webview.html = this._html();
-    // The panel is usually opened while the server is still down, so start it
-    // the first time the view becomes visible.
-    startServer();
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) startServer();
-    });
-  }
+      // Never let supervision break the view: startServer already swallows its own
+      // errors, and anything escaping it would blank the whole panel.
+      const safeStart = () => { startServer().catch(e => output.appendLine(`startServer: ${e}`)); };
+      // The panel is usually opened while the server is still down, so start it
+      // the first time the view becomes visible.
+      safeStart();
+      webviewView.onDidChangeVisibility(() => {
+        if (webviewView.visible) safeStart();
+      });
+    }
 
   reload() {
     if (this._view) this._view.webview.html = this._html();
