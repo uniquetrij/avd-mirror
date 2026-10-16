@@ -2,6 +2,10 @@
 # bin/ also holds vendored WinRT SDK assemblies (~24 MB) that must stay out of history.
 bin/
 obj/
+node_modules/
+
+# Packaged extension (rebuild with: npx @vscode/vsce package)
+extension/*.vsix
 
 # Editor / OS noise
 .vs/

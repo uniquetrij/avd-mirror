@@ -1,0 +1,65 @@
+{
+  "name": "avd-mirror",
+  "displayName": "AVD Mirror",
+  "description": "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onView:avdMirror.view"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "avdMirror",
+          "title": "AVD Mirror",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "avdMirror": [
+        {
+          "id": "avdMirror.view",
+          "name": "Screen",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "avdMirror.open",
+        "title": "Open Panel",
+        "category": "AVD Mirror"
+      },
+      {
+        "command": "avdMirror.start",
+        "title": "Start Server",
+        "category": "AVD Mirror"
+      },
+      {
+        "command": "avdMirror.stop",
+        "title": "Stop Server",
+        "category": "AVD Mirror"
+      },
+      {
+        "command": "avdMirror.restart",
+        "title": "Restart Server",
+        "category": "AVD Mirror"
+      },
+      {
+        "command": "avdMirror.reload",
+        "title": "Reload Panel",
+        "category": "AVD Mirror"
+      }
+    ]
+  }
+}
