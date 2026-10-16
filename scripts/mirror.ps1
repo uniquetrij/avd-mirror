@@ -548,15 +548,29 @@ Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Drawing
 $html = @'
 <!doctype html><html><head><meta charset="utf-8"><title>AVD Mirror</title>
 <style>
- html,body{margin:0;height:100%;background:#0d1117;color:#c9d1d9;font:12px system-ui,sans-serif}
+ html,body{margin:0;height:100%;background:#0d1117;color:#c9d1d9;font:12px system-ui,sans-serif;overflow:hidden}
  /* #wrap is the containing block for the absolutely positioned soft-key bar, and
-     carries the black that shows through wherever the screen is letterboxed. */
-  #wrap{display:flex;flex-direction:column;height:100%;position:relative;background:#000}
-  /* Stage wraps the image so the power key can be positioned against the guest
-     screen itself rather than the window, same as the soft keys below. It is the
-     only flex child now that the bar is absolute, so it takes the full height and
-     the screen letterboxes inside it rather than being sized to leave room. */
-  #stage{position:relative;flex:1;min-height:0;display:flex}
+      carries the black that shows through wherever the screen is letterboxed.
+      --barh is the soft-key bar's height, declared once and consumed by both the
+      bar and the reserved strip below the stage so they can never drift apart.
+       The page must not scroll (overflow:hidden on html/body): with a scrollbar
+       the content box is 15.2 px shorter than the panel, the stage shrinks by that
+       much, and every measurement that corrected the bar shifted it by 15.2 px
+       again - so it alternated between sitting over the screen and hanging off
+       the bottom, permanently. */
+   #wrap{display:flex;flex-direction:column;height:100%;position:relative;background:#000;--barh:38px}
+   /* Stage wraps the image so the power key can be positioned against the guest
+         screen itself rather than the window, same as the soft keys below.
+         The bar is absolutely positioned and pinned to the screen's bottom edge, so
+         the stage must not be allowed to reach the very bottom of the panel. The
+         reserved strip is a flex sibling (#barpad) rather than padding-bottom on
+         #stage: object-fit:contain fits the screen inside the stage's *content* box,
+         so padding there shrinks the screen by exactly the bar height and feeds that
+         change back into the next measurement, leaving the bar oscillating between
+         two positions instead of settling. A sibling strip is a plain fixed-height
+         box that the screen's layout never depends on. */
+      #stage{position:relative;flex:1;min-height:0;display:flex}
+      #barpad{flex:0 0 var(--barh);background:#000}
  #bar{padding:6px 10px;background:#161b22;display:flex;gap:10px;align-items:center;border-bottom:1px solid #30363d;flex-wrap:wrap}
  #m{flex:1;min-height:0;object-fit:contain;background:#000;cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
  #st{color:#f85149}
@@ -581,7 +595,7 @@ $html = @'
        `top` is absolute rather than a negative margin: a margin would change the
        space the stage occupies, which changes the letterbox, which changes the
        margin - a feedback loop that never settles. */
-    #navbar{position:absolute;left:0;right:0;top:var(--imy,0px);height:38px;background:#000;--imx:0px;--imw:100%}
+    #navbar{position:absolute;left:0;right:0;top:var(--imy,0px);height:var(--barh);background:#000;--imx:0px;--imw:100%}
   #navbar::before{content:'';position:absolute;top:0;bottom:0;left:var(--imx);width:var(--imw);
    background:#161b22;border-top:1px solid #30363d;z-index:0}
   #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%);z-index:1;
@@ -628,7 +642,10 @@ $html = @'
        #bar{padding:1px 5px;gap:5px;flex-wrap:nowrap;overflow:hidden;white-space:nowrap;font-size:10px}
        #bar b{display:none}
        #bar button{padding:0 4px;font-size:10px;line-height:12px}
-       #navbar{height:26px}
+       /* --barh must be set on #wrap, the shared ancestor: #stage and #navbar are
+          siblings, so overriding it on #navbar alone would resize the bar without
+          resizing the space the stage reserves for it. */
+       #wrap{--barh:26px}
        #navbar button{width:22px;height:22px;border-radius:5px}
        #navbar .ico{width:9px;height:9px}
        #pwr,.volkey{width:22px;height:44px;font-size:13px}
@@ -660,6 +677,7 @@ $html = @'
    <button id="volup" class="volkey" data-nav="volup" title="Volume up" aria-label="Volume up">+</button>
    <button id="voldown" class="volkey" data-nav="voldown" title="Volume down" aria-label="Volume down">&#8722;</button>
   </div>
+     <div id="barpad"></div>
   <div id="navbar">
    <button data-nav="back" title="Back" aria-label="Back"><span class="ico ico-back"></span></button><button data-nav="home" title="Home" aria-label="Home"><span class="ico ico-home"></span></button><button data-nav="recents" title="Overview" aria-label="Overview"><span class="ico"></span></button>
   </div>
@@ -800,30 +818,32 @@ const clamp=(v,a,b)=>v<a?a:v>b?b:v;
     const s=Math.min(r.width/iw,r.height/ih)||1;
     const dw=iw*s, dh=ih*s;
     const ox=r.left+(r.width-dw)/2, oy=r.top+(r.height-dh)/2;   // image box, viewport
-    navbar.style.setProperty('--imx',(ox-nb.left)+'px');
-    navbar.style.setProperty('--imw',dw+'px');
-    // Pin the bar's top edge to the bottom of the displayed guest screen. The bar
-    // is absolutely positioned in #wrap, so its offset is measured from #wrap's
-    // top - not from the bar's own box, which would feed back into its position.
-    const wp=navbar.offsetParent.getBoundingClientRect();
-    navbar.style.setProperty('--imy',(oy+dh-wp.top)+'px');
-    const sg=stage.getBoundingClientRect();
-    stage.style.setProperty('--imx',(ox-sg.left)+'px');
-    stage.style.setProperty('--imw',dw+'px');
-    stage.style.setProperty('--imy',(oy-sg.top)+'px');
-    stage.style.setProperty('--imh',dh+'px');
-  }
-// Re-measure after the browser has committed the new layout, not during the
-// resize event itself: the stage's height only settles on the next frame, so
-// measuring inline can read the *previous* geometry and leave the soft-key bar
-// pinned to a stale position (it then overlaps the screen by that difference).
-// Idempotent, so running it on every frame-sized change is safe.
-let rafNav=0;
-window.addEventListener('resize',()=>{
-  layoutNav();
-  cancelAnimationFrame(rafNav);
-  rafNav=requestAnimationFrame(()=>{layoutNav();requestAnimationFrame(layoutNav);});
-});
+      navbar.style.setProperty('--imx',(ox-nb.left)+'px');
+      navbar.style.setProperty('--imw',dw+'px');
+      // Pin the bar's top edge to the bottom of the displayed guest screen. The bar
+      // is absolutely positioned in #wrap, so its offset is measured from #wrap's
+      // top - not from the bar's own box, which would feed back into its position.
+      const wp=navbar.offsetParent.getBoundingClientRect();
+      navbar.style.setProperty('--imy',(oy+dh-wp.top)+'px');
+      const sg=stage.getBoundingClientRect();
+      stage.style.setProperty('--imx',(ox-sg.left)+'px');
+      stage.style.setProperty('--imw',dw+'px');
+      stage.style.setProperty('--imy',(oy-sg.top)+'px');
+      stage.style.setProperty('--imh',dh+'px');
+    }
+// Re-measure whenever the settled layout changes. A ResizeObserver is used rather
+// than a resize listener with rAF retries: the stage's height is itself a
+// consequence of the bar's height, so the correct value is only known once the
+// box has stopped changing. Fixed-delay retries settle for one or two frames and
+// then stop, leaving the bar pinned to the previous geometry - measured as a
+// constant 15.2 px offset at some panel sizes. Observing the box itself means the
+// last measurement is the one that matches what is on screen. layoutNav() only
+// writes custom properties, so observing stage and img cannot loop.
+if(window.ResizeObserver){
+  const ro=new ResizeObserver(()=>layoutNav());
+  ro.observe(stage); ro.observe(img);
+}
+window.addEventListener('resize',layoutNav);
 
 // map a client point inside the (object-fit:contain) image to guest px
 function gp(e){
