@@ -1,0 +1,9 @@
+# Build output: regenerable with `dotnet build -c Release` (see SKILL.md).
+# bin/ also holds vendored WinRT SDK assemblies (~24 MB) that must stay out of history.
+bin/
+obj/
+
+# Editor / OS noise
+.vs/
+*.user
+Thumbs.db
