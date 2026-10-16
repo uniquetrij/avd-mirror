@@ -620,9 +620,15 @@ $html = @'
        left edge, mirroring how Power's left edge hugs the right edge. The two are
        offset by half their height (42 px) either side of the 40% line Power sits
        on, so they touch exactly at any window size and the pair stays centred
-       where the right key is. */
-    #volup{left:calc(var(--imx) - 28px);top:calc(var(--imy) + var(--imh) * 0.4 - 42px);max-width:var(--imx)}
-    #voldown{left:calc(var(--imx) - 28px);top:calc(var(--imy) + var(--imh) * 0.4 + 42px);max-width:var(--imx)}
+         where the right key is.
+         The edge that must touch the screen is pinned with left + translateX(-100%),
+         not by clamping the width. A `left: calc(var(--imx) - 28px)` position
+         assumes a full 28 px key, so any width clamp also pulled the right edge
+         clear of the screen and the keys detached as the panel narrowed; `right`
+         cannot be used either, since it is measured from the stage's far edge.
+         Anchoring the right edge this way holds at any key width or panel width. */
+      #volup{left:var(--imx);transform:translate(-100%,-50%);top:calc(var(--imy) + var(--imh) * 0.4 - 42px)}
+      #voldown{left:var(--imx);transform:translate(-100%,-50%);top:calc(var(--imy) + var(--imh) * 0.4 + 42px)}
   #pwr:hover,.volkey:hover{background:#30363d}
   #pwr:active,.volkey:active{background:#3d444d}
   </style></head>
