@@ -74,6 +74,19 @@ function Get-GuestSize {
   return '1080x2280'
 }
 
+# Current guest orientation as 0/1/2/3 (portrait/90/180/270). The page needs it so
+# the on-screen keys can rotate with the display instead of staying in portrait
+# places. Read from the display, not from user_rotation: the setting can read
+# back a value the display never applied.
+function Get-GuestRotation {
+  try {
+    $out = (Invoke-Adb -Arguments @('shell', 'dumpsys', 'display') | Out-String)
+    $m = [regex]::Match($out, 'mCurrentOrientation=(\d+)')
+    if ($m.Success) { return [int]$m.Groups[1].Value }
+  } catch { }
+  return 0
+}
+
 # Rotate the guest display. Two steps, and both are needed on this emulator:
 # `wm fixed-to-user-rotation enabled` first, because with it disabled the guest
 # ignores user_rotation entirely - the setting stores fine and reads back
@@ -104,8 +117,10 @@ function Invoke-Rotate {
         Start-Sleep -Milliseconds 400          # let the window settle before cropping
         # The capturer's crop is fixed at its startup, so it must follow the rotation.
         Restart-Capturer -GuestSize $size
-        return $size
-      }
+                # Reply carries the size *and* the orientation, so the page rotates its
+                # keys in the same round trip: "WxH:R".
+                return ($size + ':' + (Get-GuestRotation))
+              }
 
 $gsize = Get-GuestSize
 $GSW = [int](($gsize -split 'x')[0])
@@ -673,18 +688,17 @@ $html = @'
        again - so it alternated between sitting over the screen and hanging off
        the bottom, permanently. */
    #wrap{display:flex;flex-direction:column;height:100%;position:relative;background:#000;--barh:38px}
-   /* Stage wraps the image so the power key can be positioned against the guest
-         screen itself rather than the window, same as the soft keys below.
-         The bar is absolutely positioned and pinned to the screen's bottom edge, so
-         the stage must not be allowed to reach the very bottom of the panel. The
-         reserved strip is a flex sibling (#barpad) rather than padding-bottom on
-         #stage: object-fit:contain fits the screen inside the stage's *content* box,
-         so padding there shrinks the screen by exactly the bar height and feeds that
-         change back into the next measurement, leaving the bar oscillating between
-         two positions instead of settling. A sibling strip is a plain fixed-height
-         box that the screen's layout never depends on. */
-      #stage{position:relative;flex:1;min-height:0;display:flex}
-      #barpad{flex:0 0 var(--barh);background:#000}
+   /* #stage holds the image and the rotating #keylayer. The soft-key bar reserves
+        room on whichever edge the current rotation puts it, applied as padding on
+        #stage from JS (reserveForRotation). It is set from the rotation index, never
+        from a measurement, so it cannot form a layout feedback loop - #keylayer is
+        absolutely positioned and never changes #stage's size. */
+      /* #stage holds the image and the rotating #keylayer. The soft-key bar reserves
+           room on whichever edge the current rotation puts it, applied as padding on
+           #stage from JS (reserveForRotation). It is set from the rotation index, never
+           from a measurement, so it cannot form a layout feedback loop - #keylayer is
+           absolutely positioned and never changes #stage's size. */
+            #stage{position:relative;flex:1;min-height:0;display:flex;box-sizing:border-box}
  #bar{padding:6px 10px;background:#161b22;display:flex;gap:10px;align-items:center;border-bottom:1px solid #30363d;flex-wrap:wrap}
  #m{flex:1;min-height:0;object-fit:contain;background:#000;cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
  #st{color:#f85149}
@@ -709,10 +723,19 @@ $html = @'
        `top` is absolute rather than a negative margin: a margin would change the
        space the stage occupies, which changes the letterbox, which changes the
        margin - a feedback loop that never settles. */
-    #navbar{position:absolute;left:0;right:0;top:var(--imy,0px);height:var(--barh);background:#000;--imx:0px;--imw:100%}
-  #navbar::before{content:'';position:absolute;top:0;bottom:0;left:var(--imx);width:var(--imw);
-   background:#161b22;border-top:1px solid #30363d;z-index:0}
-  #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%);z-index:1;
+    /* All on-screen keys live in one layer, #keylayer, sized to the *unrotated*
+         guest screen and rotated by the current orientation. Rotating the whole layer
+         means the keys land on the correct physical edges as the display turns: the nav
+         bar stays at the device's bottom edge, power and volume on their sides. The
+         page sets --kx/--ky (top-left), --kw/--kh (size), --kr (rotate deg) in
+         layoutNav() from the displayed screen rect and the rotation. Keys are placed
+         in portrait coordinates below; the transform does the rest. */
+      #keylayer{position:absolute;left:var(--kx);top:var(--ky);width:var(--kw);height:var(--kh);
+       transform:rotate(var(--kr,0deg));transform-origin:center center}
+        #navbar{position:absolute;left:0;right:0;bottom:0;height:var(--barh);background:#000}
+      #navbar::before{content:'';position:absolute;top:0;bottom:0;left:0;right:0;
+       background:#161b22;border-top:1px solid #30363d;z-index:0}
+  #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%) rotate(var(--krneg,0deg));z-index:1;
    width:28px;height:28px;padding:0;
    display:flex;align-items:center;justify-content:center;
    background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
@@ -726,29 +749,32 @@ $html = @'
   #navbar .ico{width:12px;height:12px;background:currentColor;display:block;flex:0 0 auto}
   #navbar .ico-home{border-radius:50%}
   #navbar .ico-back{clip-path:polygon(100% 0,0 50%,100% 100%)}
-  #navbar button[data-nav="back"]{left:calc(var(--imx) + var(--imw) * 0.25)}
-  #navbar button[data-nav="home"]{left:calc(var(--imx) + var(--imw) * 0.5)}
-  #navbar button[data-nav="recents"]{left:calc(var(--imx) + var(--imw) * 0.75)}
+  #navbar button[data-nav="back"]{left:25%}
+    #navbar button[data-nav="home"]{left:50%}
+    #navbar button[data-nav="recents"]{left:75%}
    /* Power and the two volume keys sit in the letterbox, flush against the
-        screen's side edges, so they never cover guest content. --imx/--imw are the
-        same letterbox offset and displayed width the soft keys use, and --imh the
-        displayed height, so they track the guest screen at any window size. A narrow
-        window can leave too little gutter, so each falls back to the edge it hugs.
+           screen's side edges, so they never cover guest content. Inside #keylayer they
+           are positioned against the layer's own edges (left/right edge + 40% line),
+           which the layer's rotation carries onto the correct physical edges as the
+           guest turns.
 
         This base rule must stay ABOVE the max-height media query below. Both declare
         #pwr,.volkey at equal specificity, so source order decides: with the base rule
         last, its 28x84 size overrode the compact 22x44 and the compact layout silently
         did nothing. */
-     #pwr,.volkey{position:absolute;transform:translateY(-50%);
+     #pwr,.volkey{position:absolute;
       width:28px;height:84px;padding:0;z-index:2;
       display:flex;align-items:center;justify-content:center;
       background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
       font:16px system-ui,sans-serif;cursor:pointer;line-height:1}
-     /* Power anchors the same way the volume keys now do - the edge that must touch
-        the screen is pinned by position, and the key keeps its full width - so all
-        three behave identically on resize and none of them detaches. */
-     #pwr{left:calc(var(--imx) + var(--imw));top:calc(var(--imy) + var(--imh) * 0.4)}
-      /* Short viewports (the VS Code side panel is wide but only ~130 px tall) must
+         /* Each key keeps its portrait offset/anchor but stays upright: the glyph is
+                     counter-rotated so it reads normally while the surrounding layer turns with
+                     the display. --krneg is the inverse of the layer rotation, set in layoutNav.
+                     All three anchor purely by position (edge + 40% line), so none can detach. */
+              #pwr{left:100%;top:40%;transform:translateY(-50%) rotate(var(--krneg,0deg))}
+              #volup{left:0;top:calc(40% - 42px);transform:translate(-100%,-50%) rotate(var(--krneg,0deg))}
+              #voldown{left:0;top:calc(40% + 42px);transform:translate(-100%,-50%) rotate(var(--krneg,0deg))}
+               /* Short viewports (the VS Code side panel is wide but only ~130 px tall) must
          give their space to the screen, not to chrome: the toolbar is a portrait
          phone squeezed by wrapping into three rows, which left the screen itself as a
          ~26x56 px sliver. Collapse everything to single-row, smaller controls. */
@@ -763,22 +789,11 @@ $html = @'
        #navbar button{width:22px;height:22px;border-radius:5px}
        #navbar .ico{width:9px;height:9px}
        #pwr,.volkey{width:22px;height:44px;font-size:13px}
-       #volup{top:calc(var(--imy) + var(--imh) * 0.4 - 22px)}
-       #voldown{top:calc(var(--imy) + var(--imh) * 0.4 + 22px)}
+       #volup{top:calc(40% - 22px)}
+       #voldown{top:calc(40% + 22px)}
+              /* the compact override must not drop the rotate() from the base transform */
+              #volup,#voldown{transform:translate(-100%,-50%) rotate(var(--krneg,0deg))}
       }
-  /* Left pair sits in the left letterbox: the key's right edge hugs the screen's
-       left edge, mirroring how Power's left edge hugs the right edge. The two are
-       offset by half their height (42 px) either side of the 40% line Power sits
-       on, so they touch exactly at any window size and the pair stays centred
-         where the right key is.
-         The edge that must touch the screen is pinned with left + translateX(-100%),
-         not by clamping the width. A `left: calc(var(--imx) - 28px)` position
-         assumes a full 28 px key, so any width clamp also pulled the right edge
-         clear of the screen and the keys detached as the panel narrowed; `right`
-         cannot be used either, since it is measured from the stage's far edge.
-         Anchoring the right edge this way holds at any key width or panel width. */
-      #volup{left:var(--imx);transform:translate(-100%,-50%);top:calc(var(--imy) + var(--imh) * 0.4 - 42px)}
-      #voldown{left:var(--imx);transform:translate(-100%,-50%);top:calc(var(--imy) + var(--imh) * 0.4 + 42px)}
   /* Rotation keys live in the top toolbar next to the scroll-direction toggle.
      They turn the guest display itself, so they belong with the other chrome
      controls rather than in the letterbox with the hardware keys. */
@@ -793,19 +808,20 @@ $html = @'
    <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="3" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="inp"></span></div>
   <div id="stage">
   <img id="m" alt="emulator" title="tap=left click &middot; touch &amp; hold=left press and hold &middot; swipe=left drag &middot; drag (press, hold, then move)=right press and drag &middot; scroll/fling=wheel (Natural: wheel down advances down the page) &middot; scroll sideways=shift+wheel &middot; scroll direction=toolbar &#8645; toggle &middot; pinch &amp; spread=Ctrl+drag or Ctrl+wheel &middot; Back=right click (no drag) &middot; Home=middle click &middot; edge drags=system nav gestures &middot; type=send keys"/>
-   <button id="pwr" data-nav="power" title="Power" aria-label="Power">&#9211;</button>
-   <button id="volup" class="volkey" data-nav="volup" title="Volume up" aria-label="Volume up">+</button>
-   <button id="voldown" class="volkey" data-nav="voldown" title="Volume down" aria-label="Volume down">&#8722;</button>
-  </div>
-     <div id="barpad"></div>
-  <div id="navbar">
-   <button data-nav="back" title="Back" aria-label="Back"><span class="ico ico-back"></span></button><button data-nav="home" title="Home" aria-label="Home"><span class="ico ico-home"></span></button><button data-nav="recents" title="Overview" aria-label="Overview"><span class="ico"></span></button>
-  </div>
+     <div id="keylayer">
+      <button id="pwr" data-nav="power" title="Power" aria-label="Power">&#9211;</button>
+      <button id="volup" class="volkey" data-nav="volup" title="Volume up" aria-label="Volume up">+</button>
+      <button id="voldown" class="volkey" data-nav="voldown" title="Volume down" aria-label="Volume down">&#8722;</button>
+      <div id="navbar">
+       <button data-nav="back" title="Back" aria-label="Back"><span class="ico ico-back"></span></button><button data-nav="home" title="Home" aria-label="Home"><span class="ico ico-home"></span></button><button data-nav="recents" title="Overview" aria-label="Overview"><span class="ico"></span></button>
+      </div>
+     </div>
+    </div>
  <script>
 const img=document.getElementById('m'),st=document.getElementById('st'),
       fps=document.getElementById('fps'),dim=document.getElementById('dim'),
       srcEl=document.getElementById('src'),navbar=document.getElementById('navbar'),
-      stage=document.getElementById('stage');
+      stage=document.getElementById('stage'),kl=document.getElementById('keylayer');
 // WGC (wgccap :8778) captures via Windows.Graphics.Capture - full rate even when
 // occluded. Falls back to PrintWindow (/frame.jpg) if wgccap isn't running, and
 // re-probes every ~2s to upgrade back automatically.
@@ -898,8 +914,60 @@ tick();
 let GW=1080,GH=2280;
 const inpEl=document.getElementById('inp');
 function note(msg){ inpEl.textContent=msg; }
-fetch('/gsize',{cache:'no-store'}).then(r=>r.text()).then(s=>{const m=s.match(/(\d+)x(\d+)/);
-  if(m){GW=+m[1];GH=+m[2];} layoutNav();}).catch(()=>{note('gsize failed');});
+// Adopt "WxH:R" from /rot so a freshly loaded page starts with the right size and
+// with its keys already rotated to match the guest's current orientation.
+function adoptRot(s){
+  const m=s.match(/(\d+)x(\d+)(?::(\d+))?/); if(!m) return;
+  GW=+m[1]; GH=+m[2]; if(m[3]!==undefined) ROT=(+m[3])%4;
+}
+// Rotation state, 0..3, pushed by the server and read back from /rot. Declared
+// up here with the other bindings because layoutNav() is called synchronously
+// below, before a `let` further down would initialise - which threw "Cannot
+// access 'ROT' before initialization" and left every key unlaid out.
+let ROT=0;
+
+// Reserve room on whichever edge the soft-key bar rotates onto. Driven purely by
+// the rotation index, never by a measurement, so it cannot feed back into the
+// layout: #stage's outer box is fixed by flex:1 and its padding is inside it.
+function reserveForRotation(){
+  const bh=parseFloat(getComputedStyle(document.getElementById('wrap')).getPropertyValue('--barh'))||38;
+  stage.style.paddingTop='0px';stage.style.paddingRight='0px';
+  stage.style.paddingBottom='0px';stage.style.paddingLeft='0px';
+  // The bar hangs off the portrait bottom of #keylayer; rotating the layer moves
+  // that edge to: 0->bottom, 90cw->left, 180->top, 270->right.
+  const side=['paddingBottom','paddingLeft','paddingTop','paddingRight'][ROT%4];
+  stage.style[side]=bh+'px';
+}
+
+function layoutNav(){
+    const r=img.getBoundingClientRect();
+    const iw=img.naturalWidth||GW, ih=img.naturalHeight||GH;
+    const s=Math.min(r.width/iw,r.height/ih)||1;
+    const dw=iw*s, dh=ih*s;
+    const ox=r.left+(r.width-dw)/2, oy=r.top+(r.height-dh)/2;   // displayed screen, viewport
+    const sg=stage.getBoundingClientRect();
+    stage.style.setProperty('--imx',(ox-sg.left)+'px');
+    stage.style.setProperty('--imw',dw+'px');
+    stage.style.setProperty('--imy',(oy-sg.top)+'px');
+    stage.style.setProperty('--imh',dh+'px');
+    // Size #keylayer to the *portrait* equivalent of the displayed screen and
+    // centre it on that screen, then rotate it. A rotated key layer lines the
+    // nav bar and the side keys up with the rotated display exactly.
+    const kr=(ROT%4)*90;
+    const landscape=(kr===90||kr===270);
+    const pw=landscape?dh:dw, ph=landscape?dw:dh;
+    const cx=ox+dw/2-sg.left, cy=oy+dh/2-sg.top;
+    kl.style.setProperty('--kx',(cx-pw/2)+'px');
+    kl.style.setProperty('--ky',(cy-ph/2)+'px');
+    kl.style.setProperty('--kw',pw+'px');
+    kl.style.setProperty('--kh',ph+'px');
+    kl.style.setProperty('--kr',kr+'deg');
+    kl.style.setProperty('--krneg',(-kr)+'deg');
+    }
+
+fetch('/rot',{cache:'no-store'}).then(r=>r.text()).then(s=>{
+  adoptRot(s); reserveForRotation(); layoutNav();
+}).catch(()=>{ reserveForRotation(); layoutNav(); });
 layoutNav();
 
 const pts=new Map();          // pointerId -> [x,y] in guest px
@@ -928,29 +996,9 @@ const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 // whenever there are side letterboxes; anchoring to the window would slide the
 // keys off the guest's own nav positions exactly when that happens. Same
 // contain maths as gp(), exported to CSS as the letterbox offset (--imx), the
-// displayed width (--imw) and the displayed height (--imh). The keys anchor to
-// the bar, the power key to the stage, so each element gets the values relative
-// to its own box.
-  function layoutNav(){
-    const nb=navbar.getBoundingClientRect();
-    const r=img.getBoundingClientRect();
-    const iw=img.naturalWidth||GW, ih=img.naturalHeight||GH;
-    const s=Math.min(r.width/iw,r.height/ih)||1;
-    const dw=iw*s, dh=ih*s;
-    const ox=r.left+(r.width-dw)/2, oy=r.top+(r.height-dh)/2;   // image box, viewport
-      navbar.style.setProperty('--imx',(ox-nb.left)+'px');
-      navbar.style.setProperty('--imw',dw+'px');
-      // Pin the bar's top edge to the bottom of the displayed guest screen. The bar
-      // is absolutely positioned in #wrap, so its offset is measured from #wrap's
-      // top - not from the bar's own box, which would feed back into its position.
-      const wp=navbar.offsetParent.getBoundingClientRect();
-      navbar.style.setProperty('--imy',(oy+dh-wp.top)+'px');
-      const sg=stage.getBoundingClientRect();
-      stage.style.setProperty('--imx',(ox-sg.left)+'px');
-      stage.style.setProperty('--imw',dw+'px');
-      stage.style.setProperty('--imy',(oy-sg.top)+'px');
-      stage.style.setProperty('--imh',dh+'px');
-    }
+// displayed width (--imw) and the displayed height (--imh). The keys now sit
+// inside the rotating #keylayer (see layoutNav above) so they follow the display
+// orientation; each element gets the values relative to its own box.
 // Re-measure whenever the settled layout changes. A ResizeObserver is used rather
 // than a resize listener with rAF retries: the stage's height is itself a
 // consequence of the bar's height, so the correct value is only known once the
@@ -1186,8 +1234,8 @@ document.querySelectorAll('button[data-rot]').forEach(b=>{
     try{
       const r=await fetch('/input?rot='+b.dataset.rot,{cache:'no-store'});
       const s=await r.text();
-      const m=s.match(/(\d+)x(\d+)/);
-      if(m){ GW=+m[1]; GH=+m[2]; }      // adopted on the next frame
+            adoptRot(s);                        // updates GW/GH and ROT
+            reserveForRotation();               // move the bar reservation to the new edge
       note('rotated '+s);
     }catch(e){ note('rotate failed'); }
     finally{ b.disabled=false; liftAll(); layoutNav(); img.focus(); }
@@ -1322,19 +1370,29 @@ while ($true) {
           Send-Text $p['text']
         }
                 elseif ($p.ContainsKey('rot')) {
-                  # Rotate and report the new guest size, so the page can remap its
-                  # coordinates in the same round trip rather than polling separately.
-                  $newSize = Invoke-Rotate -Rotation ([int]($p['rot']))
+                  # Rotate and report the new guest size *and* orientation, so the page
+                  # can remap coordinates and spin its keys in one round trip.
+                  $reply = Invoke-Rotate -Rotation ([int]($p['rot']))
+                  $parts = $reply -split ':'
+                  $newSize = $parts[0]
                   $GSW = [int](($newSize -split 'x')[0])
                   $GSH = [int](($newSize -split 'x')[1])
                   $err = ''
-                  $rotBody = $newSize
+                  $rotBody = $reply
                 }
                 else { $err = 'unknown input cmd' }
               } catch { $err = $_.Exception.Message }
               if ($err) { Send-Bytes $stream '500 Server Error' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($err)) }
               elseif ($rotBody) { Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($rotBody)) }
               else      { Send-Bytes $stream '200 OK' 'text/plain' ([byte[]][char[]]'ok') }
+    }
+    elseif ($path -like '/rot*') {
+      # Current size and orientation as "WxH:R", so a freshly loaded page (or one
+      # reloaded after the guest was rotated elsewhere) places its keys correctly.
+      $sz = Get-GuestSize
+      $GSW = [int](($sz -split 'x')[0])
+      $GSH = [int](($sz -split 'x')[1])
+      Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($sz + ':' + (Get-GuestRotation)))
     }
     elseif ($path -like '/gsize*') {
       # guest screen size, used for client -> guest coordinate mapping
