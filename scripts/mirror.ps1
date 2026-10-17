@@ -53,13 +53,59 @@ function Invoke-Adb {
   & $adbExe @Arguments 2>&1
 }
 
+# The *rotated* guest size, which is what the page needs to map its pixels onto
+# guest coordinates. `wm size` only ever reports the physical panel (1080x2280),
+# so it is useless once the guest is rotated - the display is 2280x1080 in
+# landscape while wm size still says 1080x2280, and every tap would land at the
+# wrong guest pixel. `dumpsys window displays` reports the current frame as
+# cur=WxH, which follows rotation.
 function Get-GuestSize {
-  $out = ''
-  try { $out = (Invoke-Adb -Arguments @('shell', 'wm', 'size') | Out-String) } catch { $out = '' }
-  $ms = [regex]::Matches($out, '(\d+)x(\d+)')
-  if ($ms.Count -gt 0) { return $ms[$ms.Count - 1].Groups[1].Value + 'x' + $ms[$ms.Count - 1].Groups[2].Value }
+  try {
+    $out = (Invoke-Adb -Arguments @('shell', 'dumpsys', 'window', 'displays') | Out-String)
+    $m = [regex]::Match($out, 'cur=(\d+)x(\d+)')
+    if ($m.Success) { return $m.Groups[1].Value + 'x' + $m.Groups[2].Value }
+  } catch { }
+  # Fall back to the physical size; still correct while the guest is portrait.
+  try {
+    $out = (Invoke-Adb -Arguments @('shell', 'wm', 'size') | Out-String)
+    $ms = [regex]::Matches($out, '(\d+)x(\d+)')
+    if ($ms.Count -gt 0) { return $ms[$ms.Count - 1].Groups[1].Value + 'x' + $ms[$ms.Count - 1].Groups[2].Value }
+  } catch { }
   return '1080x2280'
 }
+
+# Rotate the guest display. Two steps, and both are needed on this emulator:
+# `wm fixed-to-user-rotation enabled` first, because with it disabled the guest
+# ignores user_rotation entirely - the setting stores fine and reads back
+# correctly, yet mCurrentOrientation stays 0 and the frame never changes. Only
+# then does `wm user-rotation lock N` (0=portrait, 1=90, 2=180, 3=270) apply.
+function Invoke-Rotate {
+  param([int]$Rotation)
+  [void](Invoke-Adb -Arguments @('shell', 'wm', 'fixed-to-user-rotation', 'enabled'))
+  [void](Invoke-Adb -Arguments @('shell', 'wm', 'user-rotation', 'lock', ([string]($Rotation % 4))))
+  # The display settles asynchronously; reading the size immediately would still
+  # report the previous orientation and leave the page mapping clicks wrongly.
+  $deadline = [datetime]::UtcNow.AddMilliseconds(2500)
+    while ([datetime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 150
+    try {
+      $out = (Invoke-Adb -Arguments @('shell', 'dumpsys', 'window', 'displays') | Out-String)
+      $m = [regex]::Match($out, 'cur=(\d+)x(\d+)')
+      if (-not $m.Success) { continue }
+      $w = [int]$m.Groups[1].Value; $h = [int]$m.Groups[2].Value
+      # Landscape for rotations 1/3, portrait for 0/2. Stop once it matches.
+      if (($Rotation % 2 -eq 0) -eq ($w -lt $h)) { break }
+    } catch { }
+  }
+        $size = Get-GuestSize
+        # The emulator window keeps its old aspect and would letterbox the rotated
+        # guest inside itself, so reshape it before the capturer re-reads the crop.
+        [void][EmuMirrorWin]::ReshapeToGuest($hwnd, $GSW, $GSH)
+        Start-Sleep -Milliseconds 400          # let the window settle before cropping
+        # The capturer's crop is fixed at its startup, so it must follow the rotation.
+        Restart-Capturer -GuestSize $size
+        return $size
+      }
 
 $gsize = Get-GuestSize
 $GSW = [int](($gsize -split 'x')[0])
@@ -69,12 +115,40 @@ $GSH = [int](($gsize -split 'x')[1])
 # --gsize lets the capturer crop its frames to the guest display, so the mirror
 # maps browser pixels to guest pixels 1:1 (see the crop logic below).
 $wgccapExe = Join-Path $PSScriptRoot '..\src\wgccap\bin\Release\net8.0-windows10.0.19041.0\wgccap.exe'
+function Start-Capturer {
+  param([string]$GuestSize)
+  if (-not (Test-Path $wgccapExe)) { return $false }
+  Start-Process -FilePath $wgccapExe -ArgumentList '--proc','qemu-system-x86_64','--port','8778','--gsize',$GuestSize -WindowStyle Hidden
+  return $true
+}
 if (-not (Get-Process wgccap -ErrorAction SilentlyContinue)) {
-  if (Test-Path $wgccapExe) {
-    Start-Process -FilePath $wgccapExe -ArgumentList '--proc','qemu-system-x86_64','--port','8778','--gsize',$gsize -WindowStyle Hidden
+  if (Start-Capturer -GuestSize $gsize) {
     Write-Output 'WGC capturer (wgccap) started on http://127.0.0.1:8778/'
   } else {
     Write-Output 'wgccap.exe not built - PrintWindow fallback only (build src\wgccap for full-rate)'
+  }
+}
+
+# Restart the capturer so its crop follows the guest. wgccap reads --gsize once
+# at startup, so after a rotation it would keep serving a portrait crop of a
+# landscape guest while the page maps taps with the new landscape size - the
+# screen would look right but every click would land in the wrong place. The page
+# falls back to PrintWindow on /frame.jpg while the capturer is down.
+function Restart-Capturer {
+  param([string]$GuestSize)
+  if (-not (Test-Path $wgccapExe)) { return }
+  Get-Process wgccap -ErrorAction SilentlyContinue | ForEach-Object {
+    try { $_.Kill(); [void]$_.WaitForExit(3000) } catch { }
+  }
+  [void](Start-Capturer -GuestSize $GuestSize)
+  # Wait until it answers again, so the size reported back to the page is really
+  # the one the mirror is now capturing.
+  $deadline = [datetime]::UtcNow.AddMilliseconds(5000)
+  while ([datetime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 120
+    try {
+      if ((Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8778/health' -TimeoutSec 1).StatusCode -eq 200) { return }
+    } catch { }
   }
 }
 
@@ -478,8 +552,48 @@ public static class EmuMirrorWin
         return true;
     }
 
-    public static byte[] Capture(IntPtr hwnd, bool rescue, int quality, int gsw, int gsh)
-    {
+    // Resize the emulator window's client area to the guest's aspect ratio.
+        // Rotation changes the guest from portrait to landscape, but the emulator
+        // window keeps its old shape and simply letterboxes the rotated guest inside
+        // it - so the capturer crops a thin landscape strip in the middle of a tall
+        // window, and the mirror shows a squeezed image. Preserving the window's
+        // current client area as the limit keeps it on screen and only ever shrinks
+        // the long edge, so a rotation can never push the window off the desktop.
+        public static bool ReshapeToGuest(IntPtr hwnd, int gsw, int gsh)
+        {
+            if (gsw <= 0 || gsh <= 0) return false;
+            try
+            {
+                SetThreadDpiAwarenessContext(new IntPtr(-4));   // PER_MONITOR_AWARE_V2
+                if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+                RECT wr, cl;
+                if (!GetWindowRect(hwnd, out wr)) return false;
+                if (!GetClientRect(hwnd, out cl)) return false;
+                int cw = cl.R - cl.L, ch = cl.B - cl.T;
+                if (cw <= 0 || ch <= 0) return false;
+
+                // Keep the client area's longest edge, re-derive the other from the
+                // guest aspect. Never grow past what fits the virtual desktop.
+                int limit = 4000;
+                int nw, nh;
+                if ((long)cw * gsh >= (long)ch * gsw) { nh = ch; nw = (int)Math.Round((double)ch * gsw / gsh); }
+                else { nw = cw; nh = (int)Math.Round((double)cw * gsh / gsw); }
+                if (nw <= 0 || nh <= 0) return false;
+
+                int frameW = wr.R - wr.L, frameH = wr.B - wr.T;
+                int addW = nw - cw, addH = nh - ch;         // client delta -> window delta
+                int winW = frameW + addW, winH = frameH + addH;
+                if (winW < 120 || winH < 120) return false;
+                if (winW > limit || winH > limit) return false;
+
+                return SetWindowPos(hwnd, IntPtr.Zero, wr.L, wr.T, winW, winH,
+                                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            catch { return false; }
+        }
+
+        public static byte[] Capture(IntPtr hwnd, bool rescue, int quality, int gsw, int gsh)
+        {
         try
         {
             SetThreadDpiAwarenessContext(new IntPtr(-4));   // PER_MONITOR_AWARE_V2
@@ -665,12 +779,18 @@ $html = @'
          Anchoring the right edge this way holds at any key width or panel width. */
       #volup{left:var(--imx);transform:translate(-100%,-50%);top:calc(var(--imy) + var(--imh) * 0.4 - 42px)}
       #voldown{left:var(--imx);transform:translate(-100%,-50%);top:calc(var(--imy) + var(--imh) * 0.4 + 42px)}
+  /* Rotation keys live in the top toolbar next to the scroll-direction toggle.
+     They turn the guest display itself, so they belong with the other chrome
+     controls rather than in the letterbox with the hardware keys. */
+  #rot{display:inline-flex;align-items:center;gap:4px}
+  #rot b{font-weight:600;color:#8b949e;font-size:11px}
+  #rot button{padding:0 6px;font-size:13px;line-height:16px}
   #pwr:hover,.volkey:hover{background:#30363d}
   #pwr:active,.volkey:active{background:#3d444d}
   </style></head>
  <body><div id="wrap">
   <div id="bar"><b>AVD Mirror</b><span id="st">connecting...</span><span id="src"></span><span id="fps"></span><span id="dim"></span>
-   <button id="sdir">Natural &#8645;</button><span id="inp"></span></div>
+   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="3" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="inp"></span></div>
   <div id="stage">
   <img id="m" alt="emulator" title="tap=left click &middot; touch &amp; hold=left press and hold &middot; swipe=left drag &middot; drag (press, hold, then move)=right press and drag &middot; scroll/fling=wheel (Natural: wheel down advances down the page) &middot; scroll sideways=shift+wheel &middot; scroll direction=toolbar &#8645; toggle &middot; pinch &amp; spread=Ctrl+drag or Ctrl+wheel &middot; Back=right click (no drag) &middot; Home=middle click &middot; edge drags=system nav gestures &middot; type=send keys"/>
    <button id="pwr" data-nav="power" title="Power" aria-label="Power">&#9211;</button>
@@ -1056,6 +1176,23 @@ document.addEventListener('keydown',e=>{
 document.querySelectorAll('button[data-nav]').forEach(b=>{
   b.addEventListener('click',()=>{ nav(b.dataset.nav); img.focus(); });
 });
+// Rotation replies with the guest's new size, so the page can adopt it without a
+// second request. GW/GH drive every client->guest coordinate mapping (gp, the
+// pointer handlers, the pinch radius), so leaving them at the pre-rotation size
+// would put every tap at the wrong guest pixel in landscape.
+document.querySelectorAll('button[data-rot]').forEach(b=>{
+  b.addEventListener('click',async()=>{
+    b.disabled=true;
+    try{
+      const r=await fetch('/input?rot='+b.dataset.rot,{cache:'no-store'});
+      const s=await r.text();
+      const m=s.match(/(\d+)x(\d+)/);
+      if(m){ GW=+m[1]; GH=+m[2]; }      // adopted on the next frame
+      note('rotated '+s);
+    }catch(e){ note('rotate failed'); }
+    finally{ b.disabled=false; liftAll(); layoutNav(); img.focus(); }
+  });
+});
 window.addEventListener('blur',liftAll);
 // If the tab is closed or reloaded mid-gesture the final lift never leaves the
 // page; beacon it so the guest is not left holding a phantom finger.
@@ -1140,8 +1277,10 @@ while ($true) {
       # /input?tap=x,y | press=x,y[,ms] | swipe=x1,y1,x2,y2,ms
       #        | pinch=cx,cy,r1,r2,ms | recents=x,y[,mid]
       #        | nav=home|back|recents|volup|voldown|power|menu | key=KEYCODE | text=chars
+      #        | rot=0..3  -> rotates the guest and replies with the new WxH
       $p = Get-QueryParams $path
       $err = ''
+            $rotBody = ''            # set only by rot=, to reply with the new size
       try {
         if ($p.ContainsKey('tap')) {
           $a = $p['tap'] -split ','
@@ -1182,10 +1321,20 @@ while ($true) {
         elseif ($p.ContainsKey('text')) {
           Send-Text $p['text']
         }
-        else { $err = 'unknown input cmd' }
-      } catch { $err = $_.Exception.Message }
-      if ($err) { Send-Bytes $stream '500 Server Error' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($err)) }
-      else      { Send-Bytes $stream '200 OK' 'text/plain' ([byte[]][char[]]'ok') }
+                elseif ($p.ContainsKey('rot')) {
+                  # Rotate and report the new guest size, so the page can remap its
+                  # coordinates in the same round trip rather than polling separately.
+                  $newSize = Invoke-Rotate -Rotation ([int]($p['rot']))
+                  $GSW = [int](($newSize -split 'x')[0])
+                  $GSH = [int](($newSize -split 'x')[1])
+                  $err = ''
+                  $rotBody = $newSize
+                }
+                else { $err = 'unknown input cmd' }
+              } catch { $err = $_.Exception.Message }
+              if ($err) { Send-Bytes $stream '500 Server Error' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($err)) }
+              elseif ($rotBody) { Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($rotBody)) }
+              else      { Send-Bytes $stream '200 OK' 'text/plain' ([byte[]][char[]]'ok') }
     }
     elseif ($path -like '/gsize*') {
       # guest screen size, used for client -> guest coordinate mapping
