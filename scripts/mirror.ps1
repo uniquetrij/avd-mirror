@@ -94,22 +94,29 @@ function Get-GuestRotation {
 # then does `wm user-rotation lock N` (0=portrait, 1=90, 2=180, 3=270) apply.
 function Invoke-Rotate {
   param([int]$Rotation)
-  [void](Invoke-Adb -Arguments @('shell', 'wm', 'fixed-to-user-rotation', 'enabled'))
-  [void](Invoke-Adb -Arguments @('shell', 'wm', 'user-rotation', 'lock', ([string]($Rotation % 4))))
+      # Resolve to an absolute orientation first. The toolbar's "rotate left / right"
+      # buttons are *relative* and send rot=+1 / rot=-1; a non-zero value is read as
+      # a delta, not an absolute index. Passing a fixed absolute value from the
+      # buttons meant a second click re-applied the same orientation instead of
+      # advancing to the next one, so rotating twice looked like nothing happened.
+      # rot=0 stays absolute (portrait), which is what makes "force portrait" work.
+      $cur0 = Get-GuestRotation
+      if ($Rotation -ne 0) { $Rotation = ((($cur0 + $Rotation) % 4 + 4) % 4) }
+      $Rotation = $Rotation % 4
+      [void](Invoke-Adb -Arguments @('shell', 'wm', 'fixed-to-user-rotation', 'enabled'))
+    [void](Invoke-Adb -Arguments @('shell', 'wm', 'user-rotation', 'lock', ([string]$Rotation)))
   # The display settles asynchronously; reading the size immediately would still
-  # report the previous orientation and leave the page mapping clicks wrongly.
-  $deadline = [datetime]::UtcNow.AddMilliseconds(2500)
+    # report the previous orientation and leave the page mapping clicks wrongly.
+    # Wait for the *exact* orientation, not just for the portrait/landscape parity:
+    # rotations 0<->2 are both portrait and 1<->3 are both landscape, so a parity
+    # test is satisfied the instant it is asked for - the loop broke out before the
+    # guest had turned and returned the old size. Comparing mCurrentOrientation
+    # directly is unambiguous.
+    $deadline = [datetime]::UtcNow.AddMilliseconds(2500)
     while ([datetime]::UtcNow -lt $deadline) {
-    Start-Sleep -Milliseconds 150
-    try {
-      $out = (Invoke-Adb -Arguments @('shell', 'dumpsys', 'window', 'displays') | Out-String)
-      $m = [regex]::Match($out, 'cur=(\d+)x(\d+)')
-      if (-not $m.Success) { continue }
-      $w = [int]$m.Groups[1].Value; $h = [int]$m.Groups[2].Value
-      # Landscape for rotations 1/3, portrait for 0/2. Stop once it matches.
-      if (($Rotation % 2 -eq 0) -eq ($w -lt $h)) { break }
-    } catch { }
-  }
+      if ((Get-GuestRotation) -eq $Rotation) { break }
+      Start-Sleep -Milliseconds 120
+    }
         $size = Get-GuestSize
         # The emulator window keeps its old aspect and would letterbox the rotated
         # guest inside itself, so reshape it before the capturer re-reads the crop.
@@ -808,7 +815,7 @@ $html = @'
   </style></head>
  <body><div id="wrap">
   <div id="bar"><b>AVD Mirror</b><span id="st">connecting...</span><span id="src"></span><span id="fps"></span><span id="dim"></span>
-   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="3" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="inp"></span></div>
+   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="inp"></span></div>
   <div id="stage">
   <img id="m" alt="emulator" title="tap=left click &middot; touch &amp; hold=left press and hold &middot; swipe=left drag &middot; drag (press, hold, then move)=right press and drag &middot; scroll/fling=wheel (Natural: wheel down advances down the page) &middot; scroll sideways=shift+wheel &middot; scroll direction=toolbar &#8645; toggle &middot; pinch &amp; spread=Ctrl+drag or Ctrl+wheel &middot; Back=right click (no drag) &middot; Home=middle click &middot; edge drags=system nav gestures &middot; type=send keys"/>
      <div id="keylayer">
