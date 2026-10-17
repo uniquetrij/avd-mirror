@@ -117,17 +117,46 @@ function Invoke-Rotate {
       if ((Get-GuestRotation) -eq $Rotation) { break }
       Start-Sleep -Milliseconds 120
     }
-        $size = Get-GuestSize
-        # The emulator window keeps its old aspect and would letterbox the rotated
-        # guest inside itself, so reshape it before the capturer re-reads the crop.
-        [void][EmuMirrorWin]::ReshapeToGuest($hwnd, $GSW, $GSH)
-        Start-Sleep -Milliseconds 400          # let the window settle before cropping
-        # The capturer's crop is fixed at its startup, so it must follow the rotation.
-        Restart-Capturer -GuestSize $size
-                # Reply carries the size *and* the orientation, so the page rotates its
+        return (Sync-AfterRotation)
+                      }
+
+        # Re-derive everything that depends on the guest's orientation: the emulator
+        # window's shape, the capturer's crop, and the cached size. Split out of
+        # Invoke-Rotate so an orientation changed *outside* the mirror - the emulator's own
+        # rotate shortcut, an `adb shell wm user-rotation` from elsewhere - can be
+        # reconciled too. Without this the window kept its old aspect and letterboxed the
+        # rotated guest, and wgccap kept serving a portrait crop of a landscape display,
+        # so the mirror showed a squeezed image and the keys sat on the wrong edges.
+        function Sync-AfterRotation {
+                $size = Get-GuestSize
+                $script:GSW = [int](($size -split 'x')[0])
+                $script:GSH = [int](($size -split 'x')[1])
+                # The emulator window keeps its old aspect and would letterbox the rotated
+                # guest inside itself, so reshape it before the capturer re-reads the crop.
+                [void][EmuMirrorWin]::ReshapeToGuest($hwnd, $GSW, $GSH)
+                Start-Sleep -Milliseconds 400          # let the window settle before cropping
+                # The capturer's crop is fixed at its startup, so it must follow the rotation.
+                Restart-Capturer -GuestSize $size
+                # Record the orientation the mirror just applied, so the background watcher
+                # does not immediately treat the mirror's own rotation as an external one
+                # and redo the reshape + capturer restart.
+                $script:lastRot = Get-GuestRotation
+                        # Reply carries the size *and* the orientation, so the page rotates its
                 # keys in the same round trip: "WxH:R".
-                return ($size + ':' + (Get-GuestRotation))
-              }
+                return ($size + ':' + $script:lastRot)
+                      }
+
+        # Watch the guest for orientation changes the mirror did not make. $lastRot is
+        # updated by Invoke-Rotate and Sync-AfterRotation so the reconciler only does
+        # work when something else moved the display.
+        $script:lastRot = -1
+        function Sync-IfRotatedExternally {
+          $r = Get-GuestRotation
+          if ($r -eq $script:lastRot) { return $false }
+          $script:lastRot = $r
+          [void](Sync-AfterRotation)
+          return $true
+        }
 
 $gsize = Get-GuestSize
 $GSW = [int](($gsize -split 'x')[0])
@@ -980,6 +1009,22 @@ fetch('/rot',{cache:'no-store'}).then(r=>r.text()).then(s=>{
 }).catch(()=>{ reserveForRotation(); layoutNav(); });
 layoutNav();
 
+// Watch for the guest turning without the mirror's help - the emulator's own
+// rotate shortcut, or an `adb shell wm user-rotation` run elsewhere. The server
+// reconciles its own window and capturer; the page only has to notice the new
+// orientation so GW/GH (which drive every client->guest coordinate mapping) and
+// the key layer are re-derived. Without this the size and orientation were read
+// exactly once at load, and an external rotation left taps mapped to the wrong
+// guest pixel with the keys on the wrong edges.
+let lastSeenRot=ROT, lastSeenW=GW, lastSeenH=GH;
+setInterval(()=>{
+  fetch('/rot',{cache:'no-store'}).then(r=>r.text()).then(s=>{
+    const before=ROT, bw=GW, bh2=GH;
+    adoptRot(s);
+    if(ROT!==before||GW!==bw||GH!==bh2){ liftAll(); reserveForRotation(); layoutNav(); }
+  }).catch(()=>{});
+},1500);
+
 const pts=new Map();          // pointerId -> [x,y] in guest px
 let inflight=false,dirty=false;
 function flush(){
@@ -1286,12 +1331,16 @@ Write-Output "guest $gsize  touch: emulator console 127.0.0.1:$consolePort"
 if ($script:Console) { Write-Output 'emulator console connected - multi-touch gestures enabled' }
 else { Write-Output 'WARNING: emulator console unreachable - touch input will fail (needs a running AVD)' }
 
+# Seed the orientation the mirror currently believes in, so the reconciler in the
+# /rot handler only fires on a *change*.
+$script:lastRot = Get-GuestRotation
+
 while ($true) {
   if ($qemu.HasExited) { Write-Output 'EMULATOR_EXITED'; break }
   $tcp = $listener.AcceptTcpClient()
-  try {
-    $tcp.ReceiveTimeout = 5000
-    $stream = $tcp.GetStream()
+    try {
+      $tcp.ReceiveTimeout = 5000
+      $stream = $tcp.GetStream()
     # read request headers
     $buf = New-Object byte[] 8192
     $acc = ''; $total = 0
@@ -1399,11 +1448,16 @@ while ($true) {
     elseif ($path -like '/rot*') {
       # Current size and orientation as "WxH:R", so a freshly loaded page (or one
       # reloaded after the guest was rotated elsewhere) places its keys correctly.
-      $sz = Get-GuestSize
-      $GSW = [int](($sz -split 'x')[0])
-      $GSH = [int](($sz -split 'x')[1])
-      Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($sz + ':' + (Get-GuestRotation)))
-    }
+          # Reconcile first: the page polls this, so it is where an orientation change
+          # the mirror did not make - the emulator's own rotate shortcut, or an
+          # `adb shell wm user-rotation` elsewhere - gets picked up. Without it the
+          # window kept its old aspect and wgccap kept a portrait crop, so a landscape
+          # guest was shown squeezed with the keys on the wrong edges.
+          $rot = Get-GuestRotation
+          if ($rot -ne $script:lastRot) { $reply = Sync-AfterRotation }
+          else { $reply = (Get-GuestSize) + ':' + $rot }
+          Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($reply))
+        }
     elseif ($path -like '/gsize*') {
       # guest screen size, used for client -> guest coordinate mapping
       $gsize = Get-GuestSize
