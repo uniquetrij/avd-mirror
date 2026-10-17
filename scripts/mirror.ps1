@@ -767,13 +767,16 @@ $html = @'
       display:flex;align-items:center;justify-content:center;
       background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
       font:16px system-ui,sans-serif;cursor:pointer;line-height:1}
-         /* Each key keeps its portrait offset/anchor but stays upright: the glyph is
-                     counter-rotated so it reads normally while the surrounding layer turns with
-                     the display. --krneg is the inverse of the layer rotation, set in layoutNav.
-                     All three anchor purely by position (edge + 40% line), so none can detach. */
-              #pwr{left:100%;top:40%;transform:translateY(-50%) rotate(var(--krneg,0deg))}
-              #volup{left:0;top:calc(40% - 42px);transform:translate(-100%,-50%) rotate(var(--krneg,0deg))}
-              #voldown{left:0;top:calc(40% + 42px);transform:translate(-100%,-50%) rotate(var(--krneg,0deg))}
+         /* The key *bodies* rotate with the layer, exactly as the physical keys do on a
+              real device - a 28x84 key in portrait becomes an 84x28 key once the display
+              is on its side. Only the glyph inside counter-rotates, so the symbol stays
+              readable. Counter-rotating the button itself was the bug this replaces: it
+              cancelled the layer rotation for the whole element, so in landscape the keys
+              were still measured 28x84 and hung vertically off a horizontal edge. */
+              #pwr{left:100%;top:40%;transform:translateY(-50%)}
+              #volup{left:0;top:calc(40% - 42px);transform:translate(-100%,-50%)}
+              #voldown{left:0;top:calc(40% + 42px);transform:translate(-100%,-50%)}
+              #pwr>span,.volkey>span{display:block;transform:rotate(var(--krneg,0deg))}
                /* Short viewports (the VS Code side panel is wide but only ~130 px tall) must
          give their space to the screen, not to chrome: the toolbar is a portrait
          phone squeezed by wrapping into three rows, which left the screen itself as a
@@ -791,8 +794,8 @@ $html = @'
        #pwr,.volkey{width:22px;height:44px;font-size:13px}
        #volup{top:calc(40% - 22px)}
        #voldown{top:calc(40% + 22px)}
-              /* the compact override must not drop the rotate() from the base transform */
-              #volup,#voldown{transform:translate(-100%,-50%) rotate(var(--krneg,0deg))}
+              /* the compact override must not drop the translate from the base transform */
+              #volup,#voldown{transform:translate(-100%,-50%)}
       }
   /* Rotation keys live in the top toolbar next to the scroll-direction toggle.
      They turn the guest display itself, so they belong with the other chrome
@@ -809,9 +812,9 @@ $html = @'
   <div id="stage">
   <img id="m" alt="emulator" title="tap=left click &middot; touch &amp; hold=left press and hold &middot; swipe=left drag &middot; drag (press, hold, then move)=right press and drag &middot; scroll/fling=wheel (Natural: wheel down advances down the page) &middot; scroll sideways=shift+wheel &middot; scroll direction=toolbar &#8645; toggle &middot; pinch &amp; spread=Ctrl+drag or Ctrl+wheel &middot; Back=right click (no drag) &middot; Home=middle click &middot; edge drags=system nav gestures &middot; type=send keys"/>
      <div id="keylayer">
-      <button id="pwr" data-nav="power" title="Power" aria-label="Power">&#9211;</button>
-      <button id="volup" class="volkey" data-nav="volup" title="Volume up" aria-label="Volume up">+</button>
-      <button id="voldown" class="volkey" data-nav="voldown" title="Volume down" aria-label="Volume down">&#8722;</button>
+      <button id="pwr" data-nav="power" title="Power" aria-label="Power"><span>&#9211;</span></button>
+      <button id="volup" class="volkey" data-nav="volup" title="Volume up" aria-label="Volume up"><span>+</span></button>
+      <button id="voldown" class="volkey" data-nav="voldown" title="Volume down" aria-label="Volume down"><span>&#8722;</span></button>
       <div id="navbar">
        <button data-nav="back" title="Back" aria-label="Back"><span class="ico ico-back"></span></button><button data-nav="home" title="Home" aria-label="Home"><span class="ico ico-home"></span></button><button data-nav="recents" title="Overview" aria-label="Overview"><span class="ico"></span></button>
       </div>
