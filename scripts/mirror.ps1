@@ -765,9 +765,17 @@ $html = @'
          bar stays at the device's bottom edge, power and volume on their sides. The
          page sets --kx/--ky (top-left), --kw/--kh (size), --kr (rotate deg) in
          layoutNav() from the displayed screen rect and the rotation. Keys are placed
-         in portrait coordinates below; the transform does the rest. */
-      #keylayer{position:absolute;left:var(--kx);top:var(--ky);width:var(--kw);height:var(--kh);
-       transform:rotate(var(--kr,0deg));transform-origin:center center}
+             in portrait coordinates below; the transform does the rest.
+
+             pointer-events:none is essential, not cosmetic. The layer's box is exactly
+             the displayed screen rect, so with the default pointer-events:auto it became
+             the hit target for the whole screen and swallowed every tap, drag and wheel
+             event - all input to the guest died silently (elementFromPoint returned
+             #keylayer, not #m). The layer must pass events through to #m underneath;
+             only the key buttons themselves take pointer events again. */
+          #keylayer{position:absolute;left:var(--kx);top:var(--ky);width:var(--kw);height:var(--kh);
+           transform:rotate(var(--kr,0deg));transform-origin:center center;pointer-events:none}
+          #keylayer button,#keylayer a{pointer-events:auto}
         #navbar{position:absolute;left:0;right:0;bottom:0;height:var(--barh);background:#000}
       #navbar::before{content:'';position:absolute;top:0;bottom:0;left:0;right:0;
        background:#161b22;border-top:1px solid #30363d;z-index:0}
