@@ -1015,7 +1015,11 @@ $html = @'
   <div id="bar"><b>AVD Mirror</b><span id="st">connecting...</span><span id="src"></span><span id="fps"></span><span id="dim"></span>
    <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span></div>
   <div id="stage">
-  <img id="m" alt="emulator" title="tap=left click &middot; touch &amp; hold=left press and hold &middot; swipe=left drag &middot; drag (press, hold, then move)=right press and drag &middot; scroll/fling=wheel (Natural: wheel down advances down the page) &middot; scroll sideways=shift+wheel &middot; scroll direction=toolbar &#8645; toggle &middot; pinch &amp; spread=Ctrl+drag or Ctrl+wheel &middot; Back=right click (no drag) &middot; Home=middle click &middot; edge drags=system nav gestures &middot; type=send keys"/>
+  <!-- No title attribute: the hover tooltip listing every gesture shortcut was a
+       long multi-line popup over the mirrored screen, and it covered the very
+       content it was describing. The `alt` text still names the image for
+       assistive technology. -->
+  <img id="m" alt="emulator screen"/>
      <!-- Shown instead of the screen while no emulator is running. The last frame
           is cleared, because a stale screen invites the reader to believe the
           emulator is still up. -->
