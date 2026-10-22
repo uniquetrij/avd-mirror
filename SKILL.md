@@ -1,6 +1,10 @@
-# Mirror Emulator
+# AVD Mirror
 
 Mirrors the Android emulator window **inside VS Code / any browser, even when the emulator window is in the background or fully occluded**. Defeats `FLAG_SECURE` blackouts (Tinder etc.): those only block *in-guest* capture (screencap / screenrecord / scrcpy), so this captures the emulator **host window** from the Windows side instead.
+
+This is the project's technical reference: how the capture path works, what the
+endpoints are, and the traps that each part of it has to avoid. For the
+day-to-day use, see [readme.md](./readme.md).
 
 ## Architecture
 
@@ -138,7 +142,7 @@ Prevention is built into `mirror.ps1`: any slot not refreshed within `$script:Re
 1. Emulator running (`/start-avd` if not).
 2. Start the mirror:
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/mirror.ps1 -Port 8777
+   powershell -ExecutionPolicy Bypass -File scripts/mirror.ps1 -Port 8777
    ```
 3. Open **http://127.0.0.1:8777/** in a VS Code Simple Browser (`http://127.0.0.1:8777/` in the browser preview).
 4. Status bar should read `live` + `WGC` (if it reads `PW`, wgccap didn't start — build it, below).
@@ -164,10 +168,10 @@ Freshness test: `adb shell input keyevent KEYCODE_APP_SWITCH` → `/status` `fra
 `scripts/avd.ps1` owns the *emulator process* — which AVDs exist, which is running, starting and stopping — while `mirror.ps1` owns the capture and input of a running one. It is a separate small server on **8779** so the controls work with no mirror running, and so the mirror page can call it cross-origin.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/avd.ps1 -Command list
-powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/avd.ps1 -Command status
-powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/avd.ps1 -Command start -Name ai_dating
-powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/avd.ps1 -Command stop
+powershell -ExecutionPolicy Bypass -File scripts/avd.ps1 -Command list
+powershell -ExecutionPolicy Bypass -File scripts/avd.ps1 -Command status
+powershell -ExecutionPolicy Bypass -File scripts/avd.ps1 -Command start -Name ai_dating
+powershell -ExecutionPolicy Bypass -File scripts/avd.ps1 -Command stop
 ```
 
 - **Enumerate with `emulator -list-avds`, not `avdmanager list avd`.** On this machine avdmanager reports the AVD as *"Corrupted AVD ini file"* even though the emulator boots it fine, so it would hide every AVD. `emulator -list-avds` lists them correctly.
@@ -197,11 +201,14 @@ AVD controls appear in two places: the **AVDs** view in the activity bar (start 
 
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\Microsoft\dotnet;$env:PATH"   # user-local SDK 8
-cd .github/skills/mirror-emulator/src/wgccap
+cd src/wgccap
 dotnet build -c Release
 ```
 
-Exe: `bin/Release/net8.0-windows10.0.19041.0/wgccap.exe` (no NuGet deps).
+Exe: `bin/Release/net8.0-windows10.0.19041.0/wgccap.exe` (no NuGet deps). The
+versioned folder name is not hard-coded anywhere — `mirror.ps1` looks the
+executable up under `src/wgccap/bin/Release/`, so a different target framework
+or Windows SDK moves it without breaking the server.
 
 Stop any running `wgccap.exe` before rebuilding — the running binary locks the output file.
 

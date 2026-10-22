@@ -45,7 +45,10 @@ const vscodeMock = {
     registerCommand: (id, fn) => { calls.push(['registerCommand', id, fn]); return { dispose() {} }; },
     executeCommand: mk('executeCommand'),
   },
-  workspace: { workspaceFolders: [{ uri: { scheme: 'file', fsPath: path.resolve(__dirname, '..', '..') } }] },
+  // The project folder is the workspace: the extension code sits at its root,
+  // so the scripts are found at <workspace>/scripts and the mock exercises the
+  // same lookup the real extension uses.
+  workspace: { workspaceFolders: [{ uri: { scheme: 'file', fsPath: path.resolve(__dirname) } }] },
 };
 
 const origResolve = Module._resolveFilename;

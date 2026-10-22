@@ -1,0 +1,13 @@
+# The VSIX ships everything the extension needs at runtime:
+#   scripts/            the mirror and AVD manager servers
+#   src/wgccap/bin/     the built WGC capturer (wgccap.exe + its runtime pack)
+# so an installed copy works in any workspace, with no project checkout nearby.
+#
+# Excluded: the dev-only harness, the packaging output, the git metadata and
+# the .NET build intermediates (the built bin/ folder is what ships).
+harness.js
+*.vsix
+.git/**
+.gitignore
+.vscodeignore
+src/wgccap/obj/**

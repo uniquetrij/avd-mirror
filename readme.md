@@ -1,0 +1,91 @@
+# AVD Mirror
+
+Mirrors an Android emulator window **inside a VS Code panel** instead of a
+browser tab, the same way the scrcpy extensions present a device screen inside
+the editor.
+
+The screen is captured on the **host** side (Windows Graphics Capture), so it
+works even when the emulator window is in the background, fully occluded, or
+showing a `FLAG_SECURE` screen that in-guest capture (scrcppy, `screencap`)
+would return black. Gestures are streamed to the guest as real pointer events,
+so every gesture the emulator understands — tap, hold, drag, swipe, fling,
+pinch, two-finger pan, edge system-nav — behaves as it does on the device.
+
+## Why a panel rather than a tab
+
+The mirror is a live, clickable screen, not a document. A browser tab brings
+address-bar chrome and tab management to something you interact with
+continuously. In a panel it sits beside the editor, keeps focus for keyboard
+input, and never gets lost among other tabs.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `extension.js` | the VS Code extension: supervises the servers, embeds the page, hosts the AVD tree view |
+| `scripts/mirror.ps1` | the mirror server (port 8777) and the whole browser page it serves |
+| `scripts/avd.ps1` | the AVD manager (port 8779): list / start / stop / select AVDs |
+| `src/wgccap/` | the .NET 8 Windows.Graphics.Capture capturer (port 8778) |
+| `harness.js` | runs the extension against a mock VS Code API, so runtime errors show up without the extension host |
+| `SKILL.md` | the technical reference: capture internals, endpoints, and the traps in each part |
+
+The project root *is* the extension: `package.json` sits beside `extension.js`,
+so the relative path to `scripts/` is the same in a checkout and in an
+installed VSIX.
+
+## Use
+
+1. Click the **AVD Mirror** icon in the Activity Bar (left side).
+2. The panel opens and the extension starts `mirror.ps1` on port 8777 if it is
+   not already running; the frame appears as soon as the server answers.
+3. Command Palette (`Ctrl+Shift+P`) → `AVD Mirror:` for Open Panel / Start /
+   Stop / Restart / Reload. The **AVDs** view lists every AVD with its state,
+   and can start or stop them.
+
+Server logs go to the **AVD Mirror** output channel.
+
+The page also runs on its own at <http://127.0.0.1:8777/> — the extension only
+embeds it.
+
+## What the extension does and does not do
+
+It only supervises `scripts/mirror.ps1` and embeds `http://127.0.0.1:8777/`.
+All screen capture, JPEG encoding, stale-contact reaping and multi-touch
+injection live in that server — the extension adds no input handling of its
+own, so behaviour is identical to opening the page in a browser.
+
+The mirror server binds to loopback only, and `mirror.ps1` sends
+`Content-Security-Policy: frame-ancestors *` so the webview can embed it.
+
+## Build
+
+The WGC capturer is a .NET 8 program; build it once for the full-rate path
+(the server falls back to `PrintWindow` if it is missing — slower, and it has a
+channel-swap tint bug):
+
+```powershell
+cd src/wgccap
+dotnet build -c Release
+```
+
+## Install from source
+
+```powershell
+cd C:\Users\uniqu\Projects\avd-mirror
+npx @vscode/vsce package --allow-missing-repository
+code --install-extension avd-mirror-<version>.vsix --force
+```
+
+The VSIX bundles `scripts/` and the built capturer, so the installed extension
+is self-contained and works in any workspace.
+
+Then run **Developer: Reload Window** once so VS Code registers the new view.
+
+## Test the extension
+
+```powershell
+node harness.js
+```
+
+The harness activates the extension against a mock `vscode` API, invokes every
+registered command and checks the argument shapes VS Code passes them.

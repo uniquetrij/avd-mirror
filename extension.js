@@ -34,40 +34,40 @@ let output = vscode.window.createOutputChannel('AVD Mirror');
 let starting = false;
 
 /**
- * Locate mirror.ps1.
+ * Locate a script that ships with this project.
  *
- * VS Code *copies* an installed extension into ~/.vscode/extensions/<id>/, so the
- * sibling ../scripts path only holds while developing inside the skill folder.
- * An installed copy has to fall back to the skill in the open workspace, so both
- * layouts are searched before giving up.
+ * The VSIX bundles scripts/ next to the extension code, and a checkout has the
+ * very same layout, so `__dirname/scripts/...` is the path that works in both.
+ * The other candidates cover a checkout where the extension is run from a
+ * subfolder, the project opened as a workspace, and the old location of this
+ * code inside the ai-dating skill folder.
  */
-function findMirrorScript() {
+function findScript(rel) {
   const candidates = [
-    // running from the skill folder itself (development / symlinked install)
-    path.join(__dirname, '..', REL),
-    // bundled next to the extension code
-    path.join(__dirname, REL),
+    // shipped in the VSIX, and the same relative path in a checkout
+    path.join(__dirname, rel),
+    // extension code in a subfolder of the project
+    path.join(__dirname, '..', rel),
   ];
   for (const ws of (vscode.workspace.workspaceFolders || [])) {
     const uri = ws.uri;
     if (uri.scheme !== 'file') continue;
-    candidates.push(path.join(uri.fsPath, '.github', 'skills', 'mirror-emulator', REL));
+    // the project itself, opened as a workspace
+    candidates.push(path.join(uri.fsPath, rel));
+    // the old home of this code, still used by existing checkouts
+    candidates.push(path.join(uri.fsPath, '.github', 'skills', 'mirror-emulator', rel));
   }
   return candidates.find(p => fs.existsSync(p));
 }
 
-/** Locate avd.ps1 - the AVD manager. Same search order as mirror.ps1. */
+/** Locate mirror.ps1 - the screen capture and input server. */
+function findMirrorScript() {
+  return findScript(REL);
+}
+
+/** Locate avd.ps1 - the AVD manager. */
 function findAvdScript() {
-  const candidates = [
-    path.join(__dirname, '..', AVD_REL),
-    path.join(__dirname, AVD_REL),
-  ];
-  for (const ws of (vscode.workspace.workspaceFolders || [])) {
-    const uri = ws.uri;
-    if (uri.scheme !== 'file') continue;
-    candidates.push(path.join(uri.fsPath, '.github', 'skills', 'mirror-emulator', AVD_REL));
-  }
-  return candidates.find(p => fs.existsSync(p));
+  return findScript(AVD_REL);
 }
 
 // /gsize is the cheapest liveness probe the server offers: no capture, no touch
@@ -188,7 +188,7 @@ async function startServer() {
     const script = findMirrorScript();
     if (!script) {
       vscode.window.showErrorMessage(
-        'AVD Mirror: mirror.ps1 not found. Open the folder containing .github/skills/mirror-emulator.'
+        'AVD Mirror: mirror.ps1 not found. Reinstall the extension, or open the avd-mirror project folder.'
       );
       output.appendLine('mirror.ps1 not found in any known location');
       return;

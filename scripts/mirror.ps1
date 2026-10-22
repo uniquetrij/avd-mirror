@@ -232,7 +232,16 @@ $GSH = [int](($gsize -split 'x')[1])
 # --- auto-start the WGC fast capturer (page falls back to PrintWindow if not) -
 # --gsize lets the capturer crop its frames to the guest display, so the mirror
 # maps browser pixels to guest pixels 1:1 (see the crop logic below).
-$wgccapExe = Join-Path $PSScriptRoot '..\src\wgccap\bin\Release\net8.0-windows10.0.19041.0\wgccap.exe'
+# The build output lives under a versioned folder (net8.0-windows10.0.19041.0),
+# so the executable is looked up rather than hard-coded: a change of target
+# framework or of the Windows SDK moves it.
+$wgccapExe = $null
+$wgccapRoot = Join-Path $PSScriptRoot '..\src\wgccap\bin\Release'
+if (Test-Path $wgccapRoot) {
+  $wgccapFound = Get-ChildItem -Path $wgccapRoot -Filter 'wgccap.exe' -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($wgccapFound) { $wgccapExe = $wgccapFound.FullName }
+}
 function Start-Capturer {
   param([string]$GuestSize)
   if (-not (Test-Path $wgccapExe)) { return $false }

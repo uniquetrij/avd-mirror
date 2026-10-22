@@ -5,7 +5,7 @@ obj/
 node_modules/
 
 # Packaged extension (rebuild with: npx @vscode/vsce package)
-extension/*.vsix
+*.vsix
 
 # Editor / OS noise
 .vs/
