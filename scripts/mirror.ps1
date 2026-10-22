@@ -869,7 +869,8 @@ $html = @'
            from a measurement, so it cannot form a layout feedback loop - #keylayer is
            absolutely positioned and never changes #stage's size. */
             #stage{position:relative;flex:1;min-height:0;display:flex;box-sizing:border-box}
- #bar{padding:6px 10px;background:#161b22;display:flex;gap:10px;align-items:center;border-bottom:1px solid #30363d;flex-wrap:wrap}
+ #barrow{display:flex;align-items:stretch;background:#161b22;border-bottom:1px solid #30363d}
+ #bar{flex:1 1 auto;min-width:0;padding:6px 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
  #m{flex:1;min-height:0;object-fit:contain;background:#000;cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
  #st{color:#f85149}
  #inp{color:#d29922}
@@ -974,9 +975,18 @@ $html = @'
          phone squeezed by wrapping into three rows, which left the screen itself as a
          ~26x56 px sliver. Collapse everything to single-row, smaller controls. */
       @media (max-height:520px){
-       #bar{padding:1px 5px;gap:5px;flex-wrap:nowrap;overflow:hidden;white-space:nowrap;font-size:10px}
+       /* The strip scrolls sideways instead of clipping: the panel is far
+          narrower than the toolbar's content, and the AVD picker at its right
+          end is unreachable if the overflow is simply cut off. The scrollbar is
+          kept thin so it costs the screen almost no height. */
+       #bar{padding:1px 5px;gap:5px;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+        white-space:nowrap;font-size:10px;scrollbar-width:thin;scrollbar-color:#30363d transparent}
+       #bar::-webkit-scrollbar{height:4px}
+       #bar::-webkit-scrollbar-track{background:transparent}
+       #bar::-webkit-scrollbar-thumb{background:#30363d;border-radius:2px}
        #bar b{display:none}
        #bar button{padding:0 4px;font-size:10px;line-height:12px}
+       #helpbtn{width:18px;height:18px;font-size:11px}
        /* --barh must be set on #wrap, the shared ancestor: #stage and #navbar are
           siblings, so overriding it on #navbar alone would resize the bar without
           resizing the space the stage reserves for it. */
@@ -1017,12 +1027,24 @@ $html = @'
   .noemu-box{max-width:34rem}
   .noemu-title{color:#d29922;font-size:15px;font-weight:600;margin-bottom:.45em}
   .noemu-hint{color:#8b949e;font-size:12px;line-height:1.5}
-  /* The help button sits at the far right of the toolbar, and its popover is
-     anchored to the top-right of the page. */
-  #helpbtn{margin-left:auto;width:20px;height:20px;padding:0;flex:0 0 auto;
-   border-radius:50%;font:italic 600 12px/1 Georgia,serif;line-height:1}
+  /* The help button is a flex sibling of the tool strip, pinned to the right of
+     the toolbar row, and its popover is anchored to the top-right of the page.
+
+     It is deliberately not the last item in the tool strip. The compact layout
+     - which is what the VS Code panel always uses, since the panel is short -
+     collapses the toolbar to a single nowrap row that overflows, and an in-flow
+     button at the end of that row lands hundreds of pixels past the right edge
+     of the panel, where overflow:hidden clips it away completely and the help
+     it offers is unreachable. Out of flow it stays where the eye expects it
+     however crowded the toolbar gets. */
+  #helpbtn{flex:0 0 auto;align-self:center;margin:0 6px;width:20px;height:20px;padding:0;
+   background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:50%;
+   font:italic 600 12px/1 Georgia,serif;line-height:1;cursor:pointer}
+  #helpbtn:hover{background:#30363d}
   #helpbtn[aria-expanded="true"]{background:#30363d;border-color:#58a6ff}
-  #helppop{position:absolute;top:0;right:0;z-index:30;width:min(30rem,calc(100% - 2rem));
+  #helpbtn[aria-expanded="true"]{background:#30363d;border-color:#58a6ff}
+  #helppop{position:absolute;top:0;right:0;z-index:30;box-sizing:border-box;
+   width:min(30rem,calc(100% - 1.2rem));
    margin:var(--barpop,2.6rem) .6rem 0 0;padding:.8rem 1rem;background:#161b22;color:#c9d1d9;
    border:1px solid #30363d;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.5);
    font-size:12px;line-height:1.45}
@@ -1035,12 +1057,19 @@ $html = @'
   #pwr:active,.volkey:active{background:#3d444d}
   </style></head>
  <body><div id="wrap">
+  <div id="barrow">
   <div id="bar"><b>AVD Mirror</b><span id="st">connecting...</span><span id="src"></span><span id="fps"></span><span id="dim"></span>
-   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span><button id="helpbtn" title="Show the gesture shortcuts" aria-label="Show the gesture shortcuts" aria-expanded="false">i</button></div>
+   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span></div>
+   <!-- The help button is a sibling of the tool strip, not its last item: the
+        compact layout makes the strip a single nowrap row that overflows, and
+        an in-flow button at the end of it lands past the right edge of the
+        panel, clipped away and unreachable. -->
+   <button id="helpbtn" title="Show the gesture shortcuts" aria-label="Show the gesture shortcuts" aria-expanded="false">i</button>
+  </div>
   <!-- The gesture shortcuts live here rather than in a title attribute on the
        screen, where the hover tooltip covered the content it described. It is a
-       sibling of #bar rather than a child of it: the compact layout sets
-       overflow:hidden on #bar, which would clip a popover hanging off it. -->
+       sibling of #barrow rather than a child of it: the compact layout clips
+       the tool strip, which would clip a popover hanging off it. -->
   <div id="helppop" hidden>
    <div class="help-head">Gestures</div>
    <dl>
