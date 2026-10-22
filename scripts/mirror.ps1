@@ -919,7 +919,7 @@ $html = @'
         #navbar{position:absolute;left:0;right:0;top:100%;height:var(--barh);background:#000}
       #navbar::before{content:'';position:absolute;top:0;bottom:0;left:0;right:0;
        background:#161b22;border-top:1px solid #30363d;z-index:0}
-  #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%) rotate(var(--krneg,0deg));z-index:1;
+  #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%);z-index:1;
    width:28px;height:28px;padding:0;
    display:flex;align-items:center;justify-content:center;
    background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;
@@ -953,14 +953,22 @@ $html = @'
       font:16px system-ui,sans-serif;cursor:pointer;line-height:1}
          /* The key *bodies* rotate with the layer, exactly as the physical keys do on a
               real device - a 28x84 key in portrait becomes an 84x28 key once the display
-              is on its side. Only the glyph inside counter-rotates, so the symbol stays
-              readable. Counter-rotating the button itself was the bug this replaces: it
-              cancelled the layer rotation for the whole element, so in landscape the keys
-              were still measured 28x84 and hung vertically off a horizontal edge. */
+              is on its side. Counter-rotating the button itself was the bug this
+              replaces: it cancelled the layer rotation for the whole element, so in
+              landscape the keys were still measured 28x84 and hung vertically off a
+              horizontal edge.
+
+              The glyph inside rotates with the body, too. A real key's face turns with
+              the device: the power symbol ends up on its side in landscape, exactly as
+              it would if you turned the handset. An earlier version counter-rotated the
+              glyph so it stayed upright, which made the key read as a portrait key
+              lying on a rotated screen. Neither the span nor the button carries a
+              counter-rotation now, so the whole key - frame and symbol - follows
+              --kr. The soft-key bar's icons rotate for the same reason. */
               #pwr{left:100%;top:40%;transform:translateY(-50%)}
               #volup{left:0;top:calc(40% - 42px);transform:translate(-100%,-50%)}
               #voldown{left:0;top:calc(40% + 42px);transform:translate(-100%,-50%)}
-              #pwr>span,.volkey>span{display:block;transform:rotate(var(--krneg,0deg))}
+              #pwr>span,.volkey>span{display:block}
                /* Short viewports (the VS Code side panel is wide but only ~130 px tall) must
          give their space to the screen, not to chrome: the toolbar is a portrait
          phone squeezed by wrapping into three rows, which left the screen itself as a
@@ -1009,11 +1017,48 @@ $html = @'
   .noemu-box{max-width:34rem}
   .noemu-title{color:#d29922;font-size:15px;font-weight:600;margin-bottom:.45em}
   .noemu-hint{color:#8b949e;font-size:12px;line-height:1.5}
+  /* The help button sits at the far right of the toolbar, and its popover is
+     anchored to the top-right of the page. */
+  #helpbtn{margin-left:auto;width:20px;height:20px;padding:0;flex:0 0 auto;
+   border-radius:50%;font:italic 600 12px/1 Georgia,serif;line-height:1}
+  #helpbtn[aria-expanded="true"]{background:#30363d;border-color:#58a6ff}
+  #helppop{position:absolute;top:0;right:0;z-index:30;width:min(30rem,calc(100% - 2rem));
+   margin:var(--barpop,2.6rem) .6rem 0 0;padding:.8rem 1rem;background:#161b22;color:#c9d1d9;
+   border:1px solid #30363d;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.5);
+   font-size:12px;line-height:1.45}
+  #helppop[hidden]{display:none}
+  #helppop .help-head{font-weight:600;color:#e6edf3;margin-bottom:.5em}
+  #helppop dl{display:grid;grid-template-columns:auto 1fr;gap:.25em .9em;margin:0}
+  #helppop dt{color:#79c0ff;white-space:nowrap}
+  #helppop dd{margin:0;color:#8b949e}
+  #helppop .help-foot{margin-top:.7em;padding-top:.5em;border-top:1px solid #30363d;color:#6e7681}
   #pwr:active,.volkey:active{background:#3d444d}
   </style></head>
  <body><div id="wrap">
   <div id="bar"><b>AVD Mirror</b><span id="st">connecting...</span><span id="src"></span><span id="fps"></span><span id="dim"></span>
-   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span></div>
+   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span><button id="helpbtn" title="Show the gesture shortcuts" aria-label="Show the gesture shortcuts" aria-expanded="false">i</button></div>
+  <!-- The gesture shortcuts live here rather than in a title attribute on the
+       screen, where the hover tooltip covered the content it described. It is a
+       sibling of #bar rather than a child of it: the compact layout sets
+       overflow:hidden on #bar, which would clip a popover hanging off it. -->
+  <div id="helppop" hidden>
+   <div class="help-head">Gestures</div>
+   <dl>
+    <dt>tap</dt><dd>left click</dd>
+    <dt>touch &amp; hold</dt><dd>left press and hold</dd>
+    <dt>swipe</dt><dd>left drag</dd>
+    <dt>drag (press, hold, then move)</dt><dd>right press and drag</dd>
+    <dt>scroll / fling</dt><dd>wheel</dd>
+    <dt>scroll sideways</dt><dd>shift + wheel</dd>
+    <dt>scroll direction</dt><dd>the &ldquo;Natural&rdquo; toggle in the toolbar</dd>
+    <dt>pinch &amp; spread</dt><dd>ctrl + drag, or ctrl + wheel</dd>
+    <dt>Back</dt><dd>right click (no drag)</dd>
+    <dt>Home</dt><dd>middle click</dd>
+    <dt>edge drags</dt><dd>system nav gestures</dd>
+    <dt>typing</dt><dd>sends keys</dd>
+   </dl>
+   <div class="help-foot">The on-screen keys act as the device&rsquo;s own hardware keys.</div>
+  </div>
   <div id="stage">
   <!-- No title attribute: the hover tooltip listing every gesture shortcut was a
        long multi-line popup over the mirrored screen, and it covered the very
@@ -1254,7 +1299,11 @@ function layoutNav(){
     kl.style.setProperty('--kw',pw+'px');
     kl.style.setProperty('--kh',ph+'px');
     kl.style.setProperty('--kr',kr+'deg');
-    kl.style.setProperty('--krneg',(-kr)+'deg');
+    // The help popover is anchored to the top-right of the page and has to
+    // clear the toolbar, whose height differs between the normal and the
+    // compact layout. Measure it rather than hard-coding a gap.
+    const bh=document.getElementById('bar').getBoundingClientRect().height;
+    if(bh>0) document.getElementById('wrap').style.setProperty('--barpop',(bh+6)+'px');
     }
 
 // The first poll waits for the server's view of the capturer. A refused
@@ -1571,6 +1620,20 @@ async function refreshAvds(){
 avdSel.addEventListener('change',()=>{
   fetch(AVD_BASE+'/avd/select?name='+encodeURIComponent(avdSel.value),{cache:'no-store'}).catch(()=>{});
 });
+
+// --- gesture help ------------------------------------------------------------
+// The shortcuts used to live in a title attribute on the screen, where the hover
+// tooltip covered the content it described. They now open from the "i" button in
+// the top right of the toolbar.
+const helpBtn=document.getElementById('helpbtn'), helpPop=document.getElementById('helppop');
+function setHelp(open){
+  helpPop.hidden=!open;
+  helpBtn.setAttribute('aria-expanded',open?'true':'false');
+}
+helpBtn.addEventListener('click',e=>{ e.stopPropagation(); setHelp(helpPop.hidden); });
+// Click away or press Escape to dismiss.
+document.addEventListener('click',e=>{ if(!helpPop.hidden) setHelp(false); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') setHelp(false); });
 
 avdGo.addEventListener('click',async()=>{
   const name=avdSel.value; if(!name) return;
