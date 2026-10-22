@@ -1,70 +1,134 @@
 {
-  "name": "avd-mirror",
-  "displayName": "AVD Mirror",
-  "description": "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
-  "version": "0.1.0",
-  "publisher": "local",
-  "license": "MIT",
-  "engines": {
-    "vscode": "^1.85.0"
-  },
-  "categories": [
-    "Other"
-  ],
-  "main": "./extension.js",
-  "activationEvents": [
-    "onView:avdMirror.view"
-  ],
-  "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "avdMirror",
-          "title": "AVD Mirror",
-          "icon": "media/icon.svg"
-        }
-      ]
-    },
-    "views": {
-      "avdMirror": [
-        {
-          "id": "avdMirror.view",
-          "name": "Screen",
-          "type": "webview"
-        }
-      ]
-    },
-    "commands": [
-      {
-        "command": "avdMirror.open",
-        "title": "Open Panel",
-        "category": "AVD Mirror"
-      },
-            {
-              "command": "avdMirror.openInEditor",
-              "title": "Open Full Screen (Editor Tab)",
-              "category": "AVD Mirror"
-            },
-      {
-        "command": "avdMirror.start",
-        "title": "Start Server",
-        "category": "AVD Mirror"
-      },
-      {
-        "command": "avdMirror.stop",
-        "title": "Stop Server",
-        "category": "AVD Mirror"
-      },
-      {
-        "command": "avdMirror.restart",
-        "title": "Restart Server",
-        "category": "AVD Mirror"
-      },
-      {
-        "command": "avdMirror.reload",
-        "title": "Reload Panel",
-        "category": "AVD Mirror"
-      }
-    ]
-  }
+    "name":  "avd-mirror",
+    "displayName":  "AVD Mirror",
+    "description":  "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
+    "version":  "0.2.0",
+    "publisher":  "local",
+    "license":  "MIT",
+    "engines":  {
+                    "vscode":  "^1.85.0"
+                },
+    "categories":  [
+                       "Other"
+                   ],
+    "main":  "./extension.js",
+    "activationEvents":  [
+                             "onView:avdMirror.view",
+                             "onView:avdMirror.avds"
+                         ],
+    "contributes":  {
+                        "viewsContainers":  {
+                                                "activitybar":  [
+                                                                    {
+                                                                        "id":  "avdMirror",
+                                                                        "title":  "AVD Mirror",
+                                                                        "icon":  "media/icon.svg"
+                                                                    }
+                                                                ]
+                                            },
+                        "commands":  [
+                                         {
+                                             "command":  "avdMirror.open",
+                                             "title":  "Open Panel",
+                                             "category":  "AVD Mirror"
+                                         },
+                                         {
+                                             "command":  "avdMirror.openInEditor",
+                                             "title":  "Open Full Screen (Editor Tab)",
+                                             "category":  "AVD Mirror"
+                                         },
+                                         {
+                                             "command":  "avdMirror.start",
+                                             "title":  "Start Server",
+                                             "category":  "AVD Mirror"
+                                         },
+                                         {
+                                             "command":  "avdMirror.stop",
+                                             "title":  "Stop Server",
+                                             "category":  "AVD Mirror"
+                                         },
+                                         {
+                                             "command":  "avdMirror.restart",
+                                             "title":  "Restart Server",
+                                             "category":  "AVD Mirror"
+                                         },
+                                         {
+                                             "command":  "avdMirror.reload",
+                                             "title":  "Reload Panel",
+                                             "category":  "AVD Mirror"
+                                         },
+                                         {
+                                             "command":  "avdMirror.startAvd",
+                                             "title":  "Start AVD",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(play)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.stopAvd",
+                                             "title":  "Stop AVD",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(debug-stop)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.forceStopAvd",
+                                             "title":  "Force Stop AVD",
+                                             "category":  "AVD Mirror"
+                                         },
+                                         {
+                                             "command":  "avdMirror.refreshAvds",
+                                             "title":  "Refresh AVDs",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(refresh)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.selectAvd",
+                                             "title":  "Select AVD",
+                                             "category":  "AVD Mirror"
+                                         }
+                                     ],
+                        "views":  {
+                                      "avdMirror":  [
+                                                        {
+                                                            "id":  "avdMirror.avds",
+                                                            "name":  "AVDs"
+                                                        },
+                                                        {
+                                                            "id":  "avdMirror.view",
+                                                            "name":  "Screen",
+                                                            "type":  "webview"
+                                                        }
+                                                    ]
+                                  },
+                        "menus":  {
+                                      "view/title":  [
+                                                         {
+                                                             "command":  "avdMirror.startAvd",
+                                                             "when":  "view == avdMirror.avds",
+                                                             "group":  "navigation@1"
+                                                         },
+                                                         {
+                                                             "command":  "avdMirror.stopAvd",
+                                                             "when":  "view == avdMirror.avds",
+                                                             "group":  "navigation@2"
+                                                         },
+                                                         {
+                                                             "command":  "avdMirror.refreshAvds",
+                                                             "when":  "view == avdMirror.avds",
+                                                             "group":  "navigation@3"
+                                                         }
+                                                     ],
+                                      "view/item/context":  [
+                                                                {
+                                                                    "command":  "avdMirror.startAvd",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 viewItem == avdIdle",
+                                                                    "group":  "inline@1"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.stopAvd",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 viewItem == avdRunning",
+                                                                    "group":  "inline@1"
+                                                                }
+                                                            ]
+                                  }
+                    }
 }

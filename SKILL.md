@@ -159,6 +159,27 @@ Invoke-WebRequest "http://127.0.0.1:8777/input?key=KEYCODE_APP_SWITCH"
 
 Freshness test: `adb shell input keyevent KEYCODE_APP_SWITCH` → `/status` `frames` increments within ~2 s.
 
+## AVD management
+
+`scripts/avd.ps1` owns the *emulator process* — which AVDs exist, which is running, starting and stopping — while `mirror.ps1` owns the capture and input of a running one. It is a separate small server on **8779** so the controls work with no mirror running, and so the mirror page can call it cross-origin.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/avd.ps1 -Command list
+powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/avd.ps1 -Command status
+powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/avd.ps1 -Command start -Name ai_dating
+powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/avd.ps1 -Command stop
+```
+
+- **Enumerate with `emulator -list-avds`, not `avdmanager list avd`.** On this machine avdmanager reports the AVD as *"Corrupted AVD ini file"* even though the emulator boots it fine, so it would hide every AVD. `emulator -list-avds` lists them correctly.
+- **The API level is not a `target` key** in `config.ini` here — it is embedded in the system image path (`image.sysdir.1 = system-images\android-34\...`). Reading `target` alone shows a blank API for every AVD.
+- **Rotation needs `wm fixed-to-user-rotation enabled` first**, then `wm user-rotation lock N`. Alone, the lock stores and reads back correctly yet never moves the display.
+- **Start and stop return immediately**; the state is read back from the system on each poll. The accept loop is single-threaded, so a request that blocked for the ~40 s an AVD takes to boot would stall every other request behind it.
+- **Stop is graceful by default** (`adb emu kill`, waits for exit) and only forces when asked — a force stop loses unsaved guest state.
+- **The selected AVD is shared through `%LOCALAPPDATA%\avd-mirror-selected.txt`**, so `mirror.ps1` can start the same AVD on its own. When no emulator is running, `mirror.ps1` starts the selected AVD and waits for its window (≈5 s) rather than failing.
+- **`Get-Content` returns a provider-decorated object inside the server** (it is a plain string in an interactive shell), so values read that way are cast with `[string]` — otherwise the selected AVD serialises into the JSON as a nested blob instead of its name.
+
+AVD controls appear in two places: the **AVDs** view in the activity bar (start / stop / refresh, with the running one marked) and a picker in the **mirror page toolbar** for quick start/stop while the mirror is open.
+
 > ⚠️ If `/status` `age=` keeps growing while the guest screen is visibly changing, capture has **stalled**, not gone idle. Restart `wgccap.exe` — and check the two WGC traps above (`TryGetNextFrame` must be drained in a loop; the callback must not block). `/health` keeps answering `ok` while stalled, so health checks alone will not catch it.
 
 > ⚠️ `age=` also grows legitimately on a **static** screen, because WGC only produces frames when content changes. To tell "idle" from "stalled", cause a screen change (e.g. a nav key) and confirm `frames` and `age=` both move.

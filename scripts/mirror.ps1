@@ -28,16 +28,71 @@
 param(
   [int]$Port = 8777,
   [int]$Quality = 70,          # JPEG quality 1-100
-  [switch]$NoRescue            # do not auto-restore/park a minimized emulator
+  [switch]$NoRescue,           # do not auto-restore/park a minimized emulator
+  [string]$Avd = '',           # AVD to start if none is running (default: the selected one)
+  [switch]$NoAutoStart         # fail instead of starting an AVD when none is running
 )
 
 $ErrorActionPreference = 'Stop'
 
 # --- locate the emulator window ---------------------------------------------
-$qemu = Get-Process qemu-system-x86_64 -ErrorAction Stop |
+# The AVD the user picked in the extension's AVD list, shared with avd.ps1. Kept
+# as a plain file so both scripts agree on it without a shared process.
+$SelectedAvdFile = Join-Path $env:LOCALAPPDATA 'avd-mirror-selected.txt'
+
+function Get-SelectedAvd {
+  try { return (Get-Content $SelectedAvdFile -ErrorAction Stop | Select-Object -First 1).Trim() } catch { return '' }
+}
+
+# Start an AVD and wait for its window. The wait is generous: a cold AVD boot on
+# this machine measures ~38 s to sys.boot_completed, and the window handle the
+# capture needs appears a little before that.
+function Start-AvdAndWait {
+  param([string]$AvdName, [int]$TimeoutSec = 180)
+
+  $avdScript = Join-Path $PSScriptRoot 'avd.ps1'
+  if (-not (Test-Path $avdScript)) {
+    throw "AVD '$AvdName' cannot be started: avd.ps1 not found next to mirror.ps1."
+  }
+  # Write-Host, not Write-Output: everything a function writes to the output
+  # stream becomes part of its return value, so the progress lines would have
+  # turned the returned process into an array and $qemu.MainWindowHandle would
+  # no longer be a handle. Write-Host goes to the host and leaves the pipeline
+  # clean.
+  Write-Host "no emulator running - starting AVD '$AvdName'"
+  $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $avdScript -Command start -Name $AvdName 2>&1
+  foreach ($line in $out) { Write-Host "  avd.ps1: $line" }
+
+  $began = [datetime]::UtcNow
+  $deadline = $began.AddSeconds($TimeoutSec)
+  while ([datetime]::UtcNow -lt $deadline) {
+    $q = Get-Process qemu-system-x86_64 -ErrorAction SilentlyContinue |
+         Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+    if ($q) {
+      Write-Host "  AVD '$AvdName' window up after $([int]([datetime]::UtcNow - $began).TotalSeconds)s"
+      return $q
+    }
+    Start-Sleep -Milliseconds 750
+  }
+  throw "AVD '$AvdName' did not open a window within $TimeoutSec s."
+}
+
+$qemu = Get-Process qemu-system-x86_64 -ErrorAction SilentlyContinue |
         Where-Object { $_.MainWindowHandle -ne 0 } |
         Select-Object -First 1
-if (-not $qemu) { throw 'No running Android emulator window (qemu-system-x86_64) found.' }
+
+if (-not $qemu) {
+  # Nothing running: start the selected AVD (or the one named on the command
+  # line) rather than failing, so the mirror comes up on its own.
+  $want = if ($Avd) { $Avd } else { Get-SelectedAvd }
+  if ($NoAutoStart) {
+    throw 'No running Android emulator window (qemu-system-x86_64) found.'
+  }
+  if (-not $want) {
+    throw 'No running Android emulator, and no AVD is selected. Pick one in the AVD Mirror panel, or pass -Avd <name>.'
+  }
+  $qemu = Start-AvdAndWait -AvdName $want
+}
 $hwnd = $qemu.MainWindowHandle
 
 # --- adb + emulator console --------------------------------------------------
@@ -776,7 +831,13 @@ $html = @'
           #keylayer{position:absolute;left:var(--kx);top:var(--ky);width:var(--kw);height:var(--kh);
            transform:rotate(var(--kr,0deg));transform-origin:center center;pointer-events:none}
           #keylayer button,#keylayer a{pointer-events:auto}
-        #navbar{position:absolute;left:0;right:0;bottom:0;height:var(--barh);background:#000}
+    /* The bar hangs *below* the layer in portrait coordinates (top:100%), so after the
+       layer is rotated it lands just outside the matching physical edge of the
+       screen - bottom in portrait, left in landscape, and so on - and never
+       overlaps the guest display. Anchoring it with bottom:0 instead would put
+       it *on* the screen's last --barh pixels, and the bar's top edge would
+       read as 38 px above the screen bottom rather than flush with it. */
+        #navbar{position:absolute;left:0;right:0;top:100%;height:var(--barh);background:#000}
       #navbar::before{content:'';position:absolute;top:0;bottom:0;left:0;right:0;
        background:#161b22;border-top:1px solid #30363d;z-index:0}
   #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%) rotate(var(--krneg,0deg));z-index:1;
@@ -845,6 +906,18 @@ $html = @'
      They turn the guest display itself, so they belong with the other chrome
      controls rather than in the letterbox with the hardware keys. */
   #rot{display:inline-flex;align-items:center;gap:4px}
+  /* AVD picker: a select plus start/stop, in the same toolbar as the rest of the
+     controls. The AVD manager runs on its own port and is a separate origin, so
+     the page talks to it cross-origin. */
+  #avdctl{display:inline-flex;align-items:center;gap:4px}
+  #avdctl b{font-weight:600;color:#8b949e;font-size:11px}
+  #avdctl select{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;
+   font:12px system-ui,sans-serif;padding:2px 4px;max-width:190px}
+  #avdctl button{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;
+   padding:2px 7px;font:12px system-ui,sans-serif;cursor:pointer;line-height:16px}
+  #avdctl button:hover:not(:disabled){background:#30363d}
+  #avdctl button:disabled{opacity:.5;cursor:default}
+  #avdctl .avdstate{color:#8b949e;font-size:11px;min-width:58px}
   #rot b{font-weight:600;color:#8b949e;font-size:11px}
   #rot button{padding:0 6px;font-size:13px;line-height:16px}
   #pwr:hover,.volkey:hover{background:#30363d}
@@ -852,7 +925,7 @@ $html = @'
   </style></head>
  <body><div id="wrap">
   <div id="bar"><b>AVD Mirror</b><span id="st">connecting...</span><span id="src"></span><span id="fps"></span><span id="dim"></span>
-   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="inp"></span></div>
+   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span></div>
   <div id="stage">
   <img id="m" alt="emulator" title="tap=left click &middot; touch &amp; hold=left press and hold &middot; swipe=left drag &middot; drag (press, hold, then move)=right press and drag &middot; scroll/fling=wheel (Natural: wheel down advances down the page) &middot; scroll sideways=shift+wheel &middot; scroll direction=toolbar &#8645; toggle &middot; pinch &amp; spread=Ctrl+drag or Ctrl+wheel &middot; Back=right click (no drag) &middot; Home=middle click &middot; edge drags=system nav gestures &middot; type=send keys"/>
      <div id="keylayer">
@@ -1268,6 +1341,108 @@ function pinchWheel(cx,cy,delta){
 // keys: nav + editing shortcuts; remaining printable keys are typed
 function send(q){ return fetch('/input?'+q,{cache:'no-store'}).catch(()=>{}); }
 function nav(a){ send('nav='+a); }
+
+// --- AVD picker -------------------------------------------------------------
+// The AVD manager (avd.ps1) runs on its own port and is a separate origin, so
+// these calls are cross-origin; it sends Access-Control-Allow-Origin: *.
+const AVD_BASE='http://127.0.0.1:8779';
+const avdSel=document.getElementById('avdsel'), avdGo=document.getElementById('avdgo'),
+      avdStop=document.getElementById('avdstop'), avdState=document.getElementById('avdstate');
+let avdBusy=false;
+
+async function avdFetch(path){
+  const r=await fetch(AVD_BASE+path,{cache:'no-store'});
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return await r.json();
+}
+
+// Refresh the dropdown and the state label. The list is re-read every time
+// rather than cached, so an AVD created or deleted elsewhere shows up.
+async function refreshAvds(){
+  try{
+    const st=await avdFetch('/avds');
+    const want=st.selected||st.running||(st.avds[0]&&st.avds[0].name)||'';
+    // Rebuild the options, keeping the current selection when it survives.
+    const keep=avdSel.value||want;
+    avdSel.innerHTML='';
+    for(const a of st.avds){
+      const o=document.createElement('option');
+      o.value=a.name;
+      o.textContent=a.name+(a.api?' ('+a.api.replace('API ','api ')+')':'')+(a.running?' - running':'');
+      avdSel.appendChild(o);
+    }
+    if(keep&&[...avdSel.options].some(o=>o.value===keep)) avdSel.value=keep;
+    else if(want) avdSel.value=want;
+
+    const running=st.status==='running';
+    const starting=st.status==='starting';
+    avdState.textContent=running?'running':(starting?'starting...':(st.busy?'busy':'stopped'));
+    avdGo.disabled=avdBusy||running||starting;
+    avdStop.disabled=avdBusy||(!running&&!starting);
+    avdSel.disabled=avdBusy;
+    return st;
+  }catch(e){
+    avdState.textContent='no manager';
+    avdGo.disabled=true; avdStop.disabled=true;
+    return null;
+  }
+}
+
+// Selecting an AVD remembers it, so the mirror can start that one by itself
+// next time. The server stores it; the page only mirrors the choice.
+avdSel.addEventListener('change',()=>{
+  fetch(AVD_BASE+'/avd/select?name='+encodeURIComponent(avdSel.value),{cache:'no-store'}).catch(()=>{});
+});
+
+avdGo.addEventListener('click',async()=>{
+  const name=avdSel.value; if(!name) return;
+  avdBusy=true; await refreshAvds();
+  try{
+    await fetch(AVD_BASE+'/avd/start?name='+encodeURIComponent(name),{method:'POST',cache:'no-store'});
+    note('starting '+name);
+  }catch(e){ note('start failed'); }
+  finally{ avdBusy=false; }
+  // The AVD takes ~40 s to boot. Poll until it is up rather than assuming.
+  for(let i=0;i<80;i++){
+    await new Promise(r=>setTimeout(r,1000));
+    const st=await refreshAvds();
+    if(st&&(st.status==='running'||st.status==='stopped')) break;
+  }
+  await refreshAvds();
+});
+
+avdStop.addEventListener('click',async()=>{
+  avdBusy=true; await refreshAvds();
+  try{
+    await fetch(AVD_BASE+'/avd/stop?force=0',{method:'POST',cache:'no-store'});
+    note('stopping');
+  }catch(e){ note('stop failed'); }
+  finally{ avdBusy=false; }
+  // Graceful first. If the guest does not come down, ask before forcing it -
+  // a force stop loses unsaved guest state, so it is never done silently.
+  let gone=false;
+  for(let i=0;i<40;i++){
+    await new Promise(r=>setTimeout(r,500));
+    const st=await refreshAvds();
+    if(st&&st.status==='stopped'){ gone=true; break; }
+  }
+  if(!gone){
+    if(confirm('The emulator did not shut down gracefully.\n\nForce stop it now? Unsaved guest state will be lost.')){
+      await fetch(AVD_BASE+'/avd/stop?force=1',{method:'POST',cache:'no-store'}).catch(()=>{});
+      note('force stopped');
+      for(let i=0;i<20;i++){
+        await new Promise(r=>setTimeout(r,500));
+        const st=await refreshAvds();
+        if(st&&st.status==='stopped') break;
+      }
+    }
+  }
+  await refreshAvds();
+});
+
+refreshAvds();
+setInterval(refreshAvds,3000);
+
 const KEYMAP={Enter:'KEYCODE_ENTER',Backspace:'KEYCODE_DEL',Escape:'KEYCODE_BACK',Tab:'KEYCODE_TAB',
   Delete:'KEYCODE_FORWARD_DEL',ArrowUp:'KEYCODE_DPAD_UP',ArrowDown:'KEYCODE_DPAD_DOWN',
   ArrowLeft:'KEYCODE_DPAD_LEFT',ArrowRight:'KEYCODE_DPAD_RIGHT',

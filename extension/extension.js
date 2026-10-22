@@ -18,8 +18,18 @@ const PORT = 8777;
 const HOST = '127.0.0.1';
 const MIRROR_URL = `http://${HOST}:${PORT}/`;
 const REL = 'scripts/mirror.ps1';
+const AVD_REL = 'scripts/avd.ps1';
+// The AVD manager is a separate small server so the controls work whether or
+// not a mirror is running, and so the mirror page can call it cross-origin
+// exactly as it already calls wgccap on 8778.
+const AVD_PORT = 8779;
+const AVD_URL = `http://${HOST}:${AVD_PORT}`;
 
 let serverProc = null;
+let avdProc = null;
+// The AVD tree provider, kept at module scope so deactivate() can stop its
+// polling timer even when deactivate() is called on its own.
+let avdTreeRef = null;
 let output = vscode.window.createOutputChannel('AVD Mirror');
 let starting = false;
 
@@ -42,6 +52,20 @@ function findMirrorScript() {
     const uri = ws.uri;
     if (uri.scheme !== 'file') continue;
     candidates.push(path.join(uri.fsPath, '.github', 'skills', 'mirror-emulator', REL));
+  }
+  return candidates.find(p => fs.existsSync(p));
+}
+
+/** Locate avd.ps1 - the AVD manager. Same search order as mirror.ps1. */
+function findAvdScript() {
+  const candidates = [
+    path.join(__dirname, '..', AVD_REL),
+    path.join(__dirname, AVD_REL),
+  ];
+  for (const ws of (vscode.workspace.workspaceFolders || [])) {
+    const uri = ws.uri;
+    if (uri.scheme !== 'file') continue;
+    candidates.push(path.join(uri.fsPath, '.github', 'skills', 'mirror-emulator', AVD_REL));
   }
   return candidates.find(p => fs.existsSync(p));
 }
@@ -71,6 +95,87 @@ function psExe() {
   return process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
 }
 
+// --- AVD manager -------------------------------------------------------------
+// The manager is a separate server on 8779 so the AVD controls work with no
+// mirror running, and so the mirror page can reach it cross-origin.
+
+async function avdManagerUp() {
+  try {
+    const res = await fetch(`${AVD_URL}/health`, {
+      signal: AbortSignal.timeout(700),
+      cache: 'no-store',
+    });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+async function startAvdManager() {
+  if (await avdManagerUp()) return true;
+  const script = findAvdScript();
+  if (!script) {
+    output.appendLine('avd.ps1 not found - AVD controls unavailable');
+    return false;
+  }
+  try {
+    avdProc = spawn(
+      psExe(),
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+       '-File', script, '-Port', String(AVD_PORT)],
+      { detached: false, windowsHide: true }
+    );
+    avdProc.stdout.on('data', d => output.append(d.toString().trimEnd()));
+    avdProc.stderr.on('data', d => output.append(d.toString().trimEnd()));
+    avdProc.on('exit', code => {
+      output.appendLine(`AVD manager exited (${code})`);
+      avdProc = null;
+    });
+    for (let tries = 0; tries < 30; tries++) {
+      await new Promise(r => setTimeout(r, 200));
+      if (await avdManagerUp()) {
+        output.appendLine('AVD manager ready');
+        return true;
+      }
+    }
+    output.appendLine('AVD manager did not come up');
+    return false;
+  } catch (e) {
+    output.appendLine(`AVD manager start failed: ${e && e.message ? e.message : e}`);
+    return false;
+  }
+}
+
+function stopAvdManager() {
+  if (!avdProc) return;
+  const p = avdProc;
+  avdProc = null;
+  try { p.kill(); output.appendLine('stopped AVD manager'); }
+  catch (e) { output.appendLine(`AVD manager stop failed: ${e}`); }
+}
+
+/** Read the AVD inventory from the manager. */
+async function avdState() {
+  try {
+    const res = await fetch(`${AVD_URL}/avds`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function avdCommand(path) {
+  await startAvdManager();
+  try {
+    const res = await fetch(`${AVD_URL}${path}`, { method: 'POST', cache: 'no-store' });
+    const body = await res.json().catch(() => ({}));
+    return { ok: res.ok && body.ok !== false, body };
+  } catch (e) {
+    return { ok: false, body: { error: e && e.message ? e.message : String(e) } };
+  }
+}
+
 async function startServer() {
   if (starting) return;
   if (await isUp()) {
@@ -88,6 +193,9 @@ async function startServer() {
       output.appendLine('mirror.ps1 not found in any known location');
       return;
     }
+    // The AVD manager comes up first: the mirror may need it to start the
+    // selected AVD when nothing is running yet.
+    await startAvdManager();
     output.appendLine(`starting: ${script} -Port ${PORT}`);
     // Hidden, like the documented manual launch, so the mirror never steals
     // focus or opens a console window over the editor.
@@ -328,8 +436,168 @@ class MirrorViewProvider {
         }
 }
 
+// --- AVD tree view -----------------------------------------------------------
+// One row per AVD, showing which one is running and which is selected. The
+// list is re-read from the manager rather than cached, so an AVD created or
+// deleted elsewhere appears without a reload.
+class AvdTreeProvider {
+  constructor() {
+    this._onDidChangeTreeData = new vscode.EventEmitter();
+    this.onDidChangeTreeData = this._onDidChangeTreeData.event;
+    this._state = null;
+    this._timer = null;
+  }
+
+  refresh() {
+    this._onDidChangeTreeData.fire();
+  }
+
+  async poll() {
+    await startAvdManager();
+    const st = await avdState();
+    if (st) {
+      this._state = st;
+      this.refresh();
+    }
+  }
+
+  start() {
+    if (this._timer) return;
+    this.poll();
+    this._timer = setInterval(() => this.poll().catch(() => {}), 3000);
+  }
+
+  stop() {
+    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+  }
+
+  getTreeItem(el) {
+    const st = this._state || {};
+    const running = st.running === el.name;
+    const selected = st.selected === el.name;
+    const item = new vscode.TreeItem(
+      el.name,
+      running
+        ? vscode.TreeItemCollapsibleState.None
+        : vscode.TreeItemCollapsibleState.None
+    );
+    item.description = running
+      ? '● running'
+      : (selected ? '○ selected' : '');
+    // A clear icon per state beats a colour alone: the tree is small and the
+    // running/selected distinction has to be readable at a glance.
+    item.iconPath = new vscode.ThemeIcon(
+      running ? 'vm-active' : (selected ? 'vm-outline' : 'vm'),
+      running ? new vscode.ThemeColor('charts.green')
+               : (selected ? new vscode.ThemeColor('charts.blue') : undefined)
+    );
+    item.tooltip = `${el.name}${el.api ? ' - ' + el.api : ''}${el.device ? ' - ' + el.device : ''}`;
+    item.contextValue = running ? 'avdRunning' : 'avdIdle';
+    item.command = {
+      command: 'avdMirror.selectAvd',
+      title: 'Select AVD',
+      arguments: [el.name],
+    };
+    return item;
+  }
+
+  async getChildren() {
+    if (!this._state) await this.poll();
+    const st = this._state || {};
+    return (st.avds || []).map(a => ({ name: a.name, api: a.api, device: a.device }));
+  }
+}
+
+/** Select an AVD, which is what the mirror starts next time. */
+async function selectAvd(name) {
+  await startAvdManager();
+  try {
+    await fetch(`${AVD_URL}/avd/select?name=${encodeURIComponent(name)}`, { cache: 'no-store' });
+  } catch (e) {
+    vscode.window.showErrorMessage(`AVD Mirror: could not select ${name} - ${e && e.message ? e.message : e}`);
+    return;
+  }
+  vscode.window.setStatusBarMessage(`AVD Mirror: selected ${name}`);
+}
+
+/** Start an AVD and wait until the guest is actually up. */
+async function startAvd(name) {
+  const target = name || (await avdState() || {}).selected;
+  if (!target) {
+    vscode.window.showWarningMessage('AVD Mirror: no AVD selected.');
+    return;
+  }
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `AVD Mirror: starting ${target}` },
+    async () => {
+      const r = await avdCommand(`/avd/start?name=${encodeURIComponent(target)}`);
+      if (!r.ok) {
+        vscode.window.showErrorMessage(`AVD Mirror: start failed - ${r.body.error || 'unknown error'}`);
+        return;
+      }
+      // The AVD takes ~40 s to boot. Wait for it so the mirror is usable the
+      // moment the notification closes, and so a failure is reported here
+      // rather than as a blank panel later.
+      for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const st = await avdState();
+        if (!st) continue;
+        if (st.status === 'running') {
+          vscode.window.setStatusBarMessage(`AVD Mirror: ${target} running`);
+          return;
+        }
+        if (st.status === 'stopped') {
+          vscode.window.showErrorMessage(`AVD Mirror: ${target} did not start.`);
+          return;
+        }
+      }
+      vscode.window.showWarningMessage(`AVD Mirror: ${target} is taking longer than expected to boot.`);
+    }
+  );
+}
+
+/** Stop the running AVD, asking whether to force it when a graceful stop is slow. */
+async function stopAvd(force) {
+  const st = await avdState();
+  if (!st || (!st.running && st.status !== 'starting')) {
+    vscode.window.setStatusBarMessage('AVD Mirror: no AVD running');
+    return;
+  }
+  if (force) {
+    await avdCommand('/avd/stop?force=1');
+    vscode.window.setStatusBarMessage('AVD Mirror: emulator stopped');
+    return;
+  }
+  // Graceful first; offer the forceful route if it does not come down, so the
+  // user is never stuck with an emulator that will not exit.
+  await vscode.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'AVD Mirror: stopping emulator' },
+    async () => {
+      const r = await avdCommand('/avd/stop?force=0');
+      if (!r.ok && r.body.error) {
+        const forceNow = await vscode.window.showWarningMessage(
+          `AVD Mirror: ${r.body.error}`,
+          'Force stop'
+        );
+        if (forceNow === 'Force stop') {
+          await avdCommand('/avd/stop?force=1');
+          vscode.window.setStatusBarMessage('AVD Mirror: emulator force-stopped');
+        }
+        return;
+      }
+      vscode.window.setStatusBarMessage('AVD Mirror: emulator stopped');
+    }
+  );
+}
+
 function activate(context) {
   const provider = new MirrorViewProvider();
+  const avdTree = new AvdTreeProvider();
+  avdTreeRef = avdTree;
+  // The AVD list has to be live: an emulator started or stopped from the
+  // mirror page's own toolbar must show up here without a reload.
+  avdTree.start();
+  context.subscriptions.push({ dispose: () => avdTree.stop() });
     // A supervision failure must never escape into a view provider or panel:
     // that is what produces "An error occurred while loading view".
     // Must return the promise, for the same reason as in resolveWebviewView.
@@ -353,8 +621,13 @@ function activate(context) {
 
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider('avdMirror.view', provider),
-      vscode.commands.registerCommand('avdMirror.openInEditor', openInEditor),
-      vscode.commands.registerCommand('avdMirror.open', () => {
+      vscode.window.createTreeView('avdMirror.avds', { treeDataProvider: avdTree }),
+      vscode.commands.registerCommand('avdMirror.selectAvd', (name) => selectAvd(name)),
+      vscode.commands.registerCommand('avdMirror.startAvd', (name) => startAvd(name)),
+      vscode.commands.registerCommand('avdMirror.stopAvd', () => stopAvd(false)),
+      vscode.commands.registerCommand('avdMirror.forceStopAvd', () => stopAvd(true)),
+      vscode.commands.registerCommand('avdMirror.refreshAvds', () => avdTree.poll()),
+      vscode.commands.registerCommand('avdMirror.openInEditor', openInEditor),      vscode.commands.registerCommand('avdMirror.open', () => {
         vscode.commands.executeCommand('avdMirror.view.focus');
         safeStart();
       }),
@@ -371,6 +644,12 @@ function activate(context) {
 
 function deactivate() {
   stopServer();
+  stopAvdManager();
+  // The AVD tree polls on a timer. It is also disposed through the
+  // subscriptions list, but deactivate() has to be safe on its own - a live
+  // interval keeps the extension host's event loop busy after the extension
+  // has gone.
+  if (avdTreeRef) avdTreeRef.stop();
 }
 
 module.exports = { activate, deactivate };
