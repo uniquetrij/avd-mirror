@@ -383,15 +383,28 @@ class MirrorViewProvider {
                   if (el && el.naturalWidth > 0) {
                     if (!shown) { shown = true; report('inlined-ok', el.naturalWidth + 'x' + el.naturalHeight); }
                     hint.style.display = 'none';
-          }
+                    return;
+                  }
+                  // The page shows its own "Emulator is not running" notice when
+                  // there is no emulator. Stand down so that notice is visible
+                  // rather than covered by this hint, which sits on top of the
+                  // whole webview.
+                  const ne = document.getElementById('noemu');
+                  if (ne && !ne.hidden) { hint.style.display = 'none'; }
                 }
                 const watch = setInterval(checkFrame, 250);
                 window.addEventListener('DOMContentLoaded', () => report('booted', 'doc=' + document.documentElement.clientWidth + 'x' + document.documentElement.clientHeight));
                 setTimeout(() => {
                   clearInterval(watch);
                   if (!shown) {
-                    msg.textContent = 'No frames yet. Check the AVD Mirror output channel, or open in browser.';
-                    report('inlined-timeout', 'no frame');
+                    const ne = document.getElementById('noemu');
+                    if (ne && !ne.hidden) {
+                      // The page has already said what is wrong; do not talk over it.
+                      report('inlined-no-emulator', 'no emulator running');
+                    } else {
+                      msg.textContent = 'No frames yet. Check the AVD Mirror output channel, or open in browser.';
+                      report('inlined-timeout', 'no frame');
+                    }
                   }
                 }, 8000);
         // Layout probe. The panel is a different host from a browser tab - different

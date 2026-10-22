@@ -1000,6 +1000,15 @@ $html = @'
   #rot b{font-weight:600;color:#8b949e;font-size:11px}
   #rot button{padding:0 6px;font-size:13px;line-height:16px}
   #pwr:hover,.volkey:hover{background:#30363d}
+  /* The "no emulator" state. It covers the whole stage so the screen reads as
+     blank rather than showing a stale frame, and the on-screen keys are hidden
+     with it - they would otherwise float over an empty area. */
+  #noemu{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;
+   background:#000;padding:1.5rem;text-align:center}
+  #noemu[hidden]{display:none}
+  .noemu-box{max-width:34rem}
+  .noemu-title{color:#d29922;font-size:15px;font-weight:600;margin-bottom:.45em}
+  .noemu-hint{color:#8b949e;font-size:12px;line-height:1.5}
   #pwr:active,.volkey:active{background:#3d444d}
   </style></head>
  <body><div id="wrap">
@@ -1007,6 +1016,15 @@ $html = @'
    <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span></div>
   <div id="stage">
   <img id="m" alt="emulator" title="tap=left click &middot; touch &amp; hold=left press and hold &middot; swipe=left drag &middot; drag (press, hold, then move)=right press and drag &middot; scroll/fling=wheel (Natural: wheel down advances down the page) &middot; scroll sideways=shift+wheel &middot; scroll direction=toolbar &#8645; toggle &middot; pinch &amp; spread=Ctrl+drag or Ctrl+wheel &middot; Back=right click (no drag) &middot; Home=middle click &middot; edge drags=system nav gestures &middot; type=send keys"/>
+     <!-- Shown instead of the screen while no emulator is running. The last frame
+          is cleared, because a stale screen invites the reader to believe the
+          emulator is still up. -->
+     <div id="noemu" hidden>
+       <div class="noemu-box">
+         <div class="noemu-title">Emulator is not running</div>
+         <div class="noemu-hint">Start an AVD from the AVD picker above, or from the AVD Mirror panel.</div>
+       </div>
+     </div>
      <div id="keylayer">
       <button id="pwr" data-nav="power" title="Power" aria-label="Power"><span>&#9211;</span></button>
       <button id="volup" class="volkey" data-nav="volup" title="Volume up" aria-label="Volume up"><span>+</span></button>
@@ -1020,7 +1038,24 @@ $html = @'
 const img=document.getElementById('m'),st=document.getElementById('st'),
       fps=document.getElementById('fps'),dim=document.getElementById('dim'),
       srcEl=document.getElementById('src'),navbar=document.getElementById('navbar'),
-      stage=document.getElementById('stage'),kl=document.getElementById('keylayer');
+      stage=document.getElementById('stage'),kl=document.getElementById('keylayer'),
+      noemuEl=document.getElementById('noemu');
+
+// Blank the screen and say why, while no emulator is running. Keeping the last
+// frame on screen was misleading - it looked like a live picture of an app that
+// had simply frozen. The on-screen keys are hidden with it, since they would
+// otherwise float over an empty area.
+function showNoEmulator(on){
+  if(noemuEl.hidden===!on) return;
+  noemuEl.hidden=!on;
+  kl.style.visibility=on?'hidden':'';
+  if(on){
+    // Drop the stale frame so the stage is genuinely blank behind the warning.
+    if(prev){ URL.revokeObjectURL(prev); prev=null; }
+    img.removeAttribute('src');
+    dim.textContent='';
+  }
+}
 // WGC (wgccap :8778) captures via Windows.Graphics.Capture - full rate even when
 // occluded. Falls back to PrintWindow (/frame.jpg) if wgccap isn't running, and
 // re-probes every ~2s to upgrade back automatically.
@@ -1036,6 +1071,20 @@ let still=0;                  // consecutive polls that returned 304
 // capturer answers a matching ?since= with 304 and no body, so an idle
 // screen costs a header-only round trip and only real changes are decoded.
 let frameSeq='';
+// The capturer's state, as reported by the server in the /rot reply. null means
+// "not known yet".
+//
+// This matters more than it looks: a refused connection to a dead local port
+// takes ~2 s to fail on this machine (measured with a raw TcpClient, not just
+// the browser). Polling a capturer that is not there therefore stalls the
+// frame loop for two seconds per attempt, which is why the page would sit on
+// "connecting..." for several seconds before showing the no-emulator notice.
+// The server knows whether the capturer is up, so the page asks instead of
+// finding out the slow way.
+let capturerUp = null;
+// Do not retry a known-dead capturer for this long after a failure.
+let wgcDownUntil = 0;
+
 async function grab(url,since){
   // The frame token goes in the query string, not a conditional request header: a
   // custom request header would turn every poll into a CORS preflighted
@@ -1060,16 +1109,34 @@ async function tick(){
   const tReq=performance.now(); let live=false, gotFrame=false;
   try{
     let b=null, got=false, srcName='';
-    if(mode==='wgc'){
-      try{ b=await grab('http://127.0.0.1:8778/frame.jpg?t='+Date.now(),frameSeq); got=true; srcName='WGC'; }
-      catch(e){ if(++fails>=3){ mode='pw'; fails=0; } else throw e; }
+    // Skip the WGC attempt entirely while the server says the capturer is down,
+    // and back off for a few seconds after it fails. A refused local port takes
+    // ~2 s to fail, so probing a dead capturer every tick would stall the
+    // frame loop and delay the no-emulator notice by seconds.
+    const tryWgc = (mode==='wgc') && (capturerUp!==false) && (Date.now()>=wgcDownUntil);
+    if(tryWgc){
+      try{ b=await grab('http://127.0.0.1:8778/frame.jpg?t='+Date.now(),frameSeq); got=true; srcName='WGC'; capturerUp=true; }
+      catch(e){
+        // A network-level failure means the capturer is not listening at all -
+        // it died with the emulator window it was capturing. That is not a
+        // transient blip, so fall through to the mirror's own endpoint
+        // immediately instead of after three attempts: otherwise the page
+        // reads "reconnecting" for a moment before discovering the real
+        // reason, which is that no emulator is running.
+        const netErr=/Failed to fetch|NetworkError|load failed/i.test(e&&e.message?e.message:String(e));
+        if(netErr){ mode='pw'; fails=0; capturerUp=false; wgcDownUntil=Date.now()+5000; }
+        else if(++fails>=3){ mode='pw'; fails=0; }
+        else throw e;
+      }
     }
     if(!got){
       b=await grab('/frame.jpg?t='+Date.now());
       mode='pw'; srcName='PW';
-      if(++probe>=25){ probe=0;
+      // Periodically look for the capturer again, but not while the back-off
+      // says it is known to be down - each attempt costs ~2 s to fail.
+      if(++probe>=25 && Date.now()>=wgcDownUntil){ probe=0;
         try{ const b2=await grab('http://127.0.0.1:8778/frame.jpg?t='+Date.now(),frameSeq);
-             mode='wgc'; fails=0; srcName='WGC'; if(b2!==null) b=b2; }catch(e){}
+             mode='wgc'; fails=0; srcName='WGC'; capturerUp=true; wgcDownUntil=0; if(b2!==null) b=b2; }catch(e){}
       }
     }
     // b===null means 304: the screen has not changed, so leave the decoded frame
@@ -1089,6 +1156,7 @@ async function tick(){
     const el=(performance.now()-t0)/1000;
     if(el>=1){ fps.textContent=(n/el).toFixed(0)+' fps'; n=0; t0=performance.now(); }
     live=true;
+    showNoEmulator(false);
   }catch(e){
     // "no emulator running" is a normal state - the AVD can be stopped from
     // the toolbar - so it is reported as such rather than as a lost connection.
@@ -1097,6 +1165,7 @@ async function tick(){
     const noEmu=/no emulator/i.test(e&&e.message?e.message:String(e));
     st.textContent=noEmu?'no emulator running':'reconnecting... ('+e+')';
     st.style.color=noEmu?'#d29922':'#f85149';
+    if(noEmu) showNoEmulator(true);
   }
   // Self-paced. A fixed 80 ms delay capped the mirror at ~12 fps even though the
   // capturer answers in ~15 ms, so every frame the eye saw was up to 80 ms stale
@@ -1114,7 +1183,8 @@ async function tick(){
   const gap=still<4?FRAME_MIN_GAP:FRAME_IDLE_GAP*Math.pow(2,still-3);
   setTimeout(tick, live?Math.max(0,gap-spent):80);
 }
-tick();
+// The loop is started further down, once the initial /rot has reported whether
+// the capturer is up.
 
 // --- input forwarding: raw pointer streaming -> emulator console (multi-touch) ---
 // The mirror forwards *actual* pointer motion to the guest instead of classifying
@@ -1129,8 +1199,14 @@ function note(msg){ inpEl.textContent=msg; }
 // Adopt "WxH:R" from /rot so a freshly loaded page starts with the right size and
 // with its keys already rotated to match the guest's current orientation.
 function adoptRot(s){
-  const m=s.match(/(\d+)x(\d+)(?::(\d+))?/); if(!m) return;
-  GW=+m[1]; GH=+m[2]; if(m[3]!==undefined) ROT=(+m[3])%4;
+  // "WxH:R" and optionally "WxH:R:C", where C is the capturer's state (1 up,
+  // 0 down). Split on ':' rather than one big regex so the parts stay optional.
+  const parts=String(s).split(':');
+  const wh=(parts[0]||'').match(/(\d+)x(\d+)/);
+  if(!wh) return;
+  GW=+wh[1]; GH=+wh[2];
+  if(parts[1]!==undefined) ROT=(+parts[1])%4;
+  if(parts[2]!==undefined) capturerUp=(+parts[2])===1;
 }
 // Rotation state, 0..3, pushed by the server and read back from /rot. Declared
 // up here with the other bindings because layoutNav() is called synchronously
@@ -1177,10 +1253,16 @@ function layoutNav(){
     kl.style.setProperty('--krneg',(-kr)+'deg');
     }
 
-fetch('/rot',{cache:'no-store'}).then(r=>r.text()).then(s=>{
+// The first poll waits for the server's view of the capturer. A refused
+// connection to a dead local port takes ~2 s to fail on this machine, so
+// starting the frame loop before knowing whether the capturer is up would
+// spend two seconds on a dead port before the no-emulator notice could
+// appear. /rot answers in ~60 ms and says whether the capturer is running.
+const rotReady = fetch('/rot',{cache:'no-store'}).then(r=>r.text()).then(s=>{
   adoptRot(s); reserveForRotation(); layoutNav();
 }).catch(()=>{ reserveForRotation(); layoutNav(); });
 layoutNav();
+rotReady.then(()=>tick());
 
 // Watch for the guest turning without the mirror's help - the emulator's own
 // rotate shortcut, or an `adb shell wm user-rotation` run elsewhere. The server
@@ -1728,7 +1810,9 @@ while ($true) {
                   $GSW = [int](($newSize -split 'x')[0])
                   $GSH = [int](($newSize -split 'x')[1])
                   $err = ''
-                  $rotBody = $reply
+                  $cap = 0
+                  if (Get-Process wgccap -ErrorAction SilentlyContinue) { $cap = 1 }
+                  $rotBody = $newSize + ':' + $parts[1] + ':' + $cap
                 }
                 else { $err = 'unknown input cmd' }
               } catch { $err = $_.Exception.Message }
@@ -1747,7 +1831,13 @@ while ($true) {
           $rot = Get-GuestRotation
           if ($rot -ne $script:lastRot) { $reply = Sync-AfterRotation }
           else { $reply = (Get-GuestSize) + ':' + $rot }
-          Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($reply))
+          # Report whether the capturer is up. The page needs this because a
+          # refused connection to a dead local port takes ~2 s to fail here, and
+          # polling a capturer that is not there would stall the frame loop and
+          # delay the no-emulator notice by seconds.
+          $cap = 0
+          if (Get-Process wgccap -ErrorAction SilentlyContinue) { $cap = 1 }
+          Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($reply + ':' + $cap))
         }
     elseif ($path -like '/gsize*') {
       # guest screen size, used for client -> guest coordinate mapping
