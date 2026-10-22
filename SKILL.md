@@ -23,7 +23,21 @@ day-to-day use, see [readme.md](./readme.md).
 - **The page self-paces its frame poll** (`FRAME_MIN_GAP`, an 8 ms floor against a hot spin, not a rate cap). A fixed `setTimeout` delay is a hard display-rate cap: an 80 ms delay pinned the mirror to ~12 fps regardless of how fast the capturer answered, adding up to 80 ms of staleness on top of each frame's own age.
 - **Unchanged frames cost nothing, and the poll backs off.** The capturer answers `GET /frame.jpg?since=<seq>` with **304 and no body** when the screen has not changed (`X-Frame-Seq` carries the sequence, exposed via `Access-Control-Expose-Headers`). The token goes in the **query string, not `If-None-Match`** — a custom request header makes this a CORS preflighted request and doubles the round trips. Re-decoding an identical JPEG every poll burns the main thread (which also paints and handles input) and queues older decodes ahead of the frame that is actually new, so hard polling without this makes the mirror lag *more* the harder it is polled. Consecutive 304s ramp the poll gap up (`still` counter, `FRAME_IDLE_GAP` doubling) and any real frame drops straight back to the fast floor: every poll is a TCP connection, and ~120/s of them against a static screen is pure overhead.
 - **Frame budget, measured:** input round-trip is **2–4 ms**; a definite guest change reaches the page in **~65 ms** end-to-end (that includes the guest's own animation); the capturer sustains **~73 fps** during motion and the page's `frameSeq` tracks `/status frames` 1:1, so the display path introduces no queueing of its own.
-- Minimized windows can't be captured (no DWM surface): both helpers auto-restore; wgccap drops it to `HWND_BOTTOM` so it stays out of the way.
+- Minimized windows can't be captured (no DWM surface): both helpers auto-restore
+  and park the window just outside the virtual screen. Dropping it to
+  `HWND_BOTTOM` (wgccap's old behaviour) was not enough — it put the window back
+  behind the editor, so an emulator minimized to get it out of the way
+  reappeared. Clicking a parked window's taskbar entry restores it to where it
+  was.
+- **Hiding the window is parking, not hiding.** `SW_HIDE` freezes the capture
+  (measured: `wgccap` served **0 frames in 3 s** hidden, then **182 in 3 s** after
+  `SW_SHOWNOACTIVATE`), for the same reason minimizing does: no DWM surface, no
+  frame. A window merely positioned outside the virtual screen keeps its surface —
+  **159 frames in 3 s (~53 fps)** while parked. `GET /window?hidden=1|0|toggle`
+  on **8777** parks/unparks it and remembers the last on-screen rect;
+  `?state=1` reports `shown` / `hidden` / `no-emulator` as JSON. The state is read
+  back from the window rect rather than from what the server last did, because
+  the parked window can be brought forward by the user.
 - **Frames are cropped to the guest display.** Both helpers remove the window chrome (title bar + borders), so the served JPEG *is* the guest screen at the window's client size (`270x570` for a `1080x2280` guest, `270x128` for `2280x1080`). The page can therefore map image-fraction → guest px directly. `--gsize WxH` (wgccap) and `Get-GuestSize` (mirror.ps1) supply the guest size used by the crop — and both must be the **rotated** size, not `wm size`, for rotation to work (see below).
 - Both helpers are **per-monitor DPI aware** (`SetProcessDpiAwarenessContext(-4)` / `SetThreadDpiAwarenessContext(-4)`). Without it the process measures virtualized metrics (÷1.25 at 125%) while `PrintWindow` still renders the guest 1:1 *physical*, producing a cropped, mis-mapped image.
 - The WGC frame pool is created once with the item size; on a window resize `Direct3D11CaptureFramePool.Recreate` is called, otherwise stale-sized frames are returned forever.
@@ -155,6 +169,9 @@ Invoke-WebRequest http://127.0.0.1:8778/status         # fps, frames, age=<ms>
 Invoke-WebRequest http://127.0.0.1:8778/frame.jpg      # WGC JPEG (CORS *)
 Invoke-WebRequest http://127.0.0.1:8777/frame.jpg      # PrintWindow JPEG (cropped to the guest display)
 Invoke-WebRequest http://127.0.0.1:8777/gsize          # "1080x2280" (guest display)
+Invoke-WebRequest "http://127.0.0.1:8777/window?state=1"        # {"ok":true,"state":"shown","hidden":false}
+Invoke-WebRequest "http://127.0.0.1:8777/window?hidden=1"       # park the emulator window off-screen
+Invoke-WebRequest "http://127.0.0.1:8777/window?hidden=0"       # put it back where it was
 Invoke-WebRequest "http://127.0.0.1:8777/touch?p=1:540:1200"   # pointer down
 Invoke-WebRequest "http://127.0.0.1:8777/touch?p="             # lift all
 Invoke-WebRequest "http://127.0.0.1:8777/input?nav=back"       # Back

@@ -55,12 +55,14 @@ internal static class Program
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int cmd);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")]
     static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 
-    static readonly IntPtr HWND_BOTTOM = new(1);
-    const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOACTIVATE = 0x0010;
+    const uint SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
     const int SW_SHOWNOACTIVATE = 8, SW_RESTORE = 9;
+    const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77,
+              SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
 
     static IntPtr FindWindowByProc(string procName)
     {
@@ -115,21 +117,62 @@ internal static class Program
         }
     }
 
-    // --- minimized windows produce no WGC frames: quietly restore them
-    // and drop them to the bottom of the z-order (stays out of the way).
+    // --- minimized windows produce no WGC frames: quietly restore them and park
+    // them just outside the virtual screen. Dropping the window to HWND_BOTTOM
+    // (the previous behaviour) only put it behind the editor, so an emulator
+    // minimized to get it out of the way came back into view on the next rescue.
+    // Off-screen keeps it out of sight *and* captured: a window that is merely
+    // positioned outside the virtual screen still has a DWM surface, while a
+    // hidden (SW_HIDE) or minimized one has none and the mirror freezes.
+    static RECT _stash; static bool _haveStash;
+
+    static bool OffScreen(RECT r)
+    {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        return r.R <= vx || r.L >= vx + vw || r.B <= vy || r.T >= vy + vh;
+    }
+
     static void RescueIfMinimized(IntPtr hwnd)
     {
-        if (!IsIconic(hwnd)) return;
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        if (IsIconic(hwnd))
+        bool minimized = IsIconic(hwnd);
+        if (minimized)
         {
-            IntPtr prev = GetForegroundWindow();
-            ShowWindow(hwnd, SW_RESTORE);
-            if (prev != IntPtr.Zero && prev != hwnd) SetForegroundWindow(prev);
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            if (IsIconic(hwnd))
+            {
+                IntPtr prev = GetForegroundWindow();
+                ShowWindow(hwnd, SW_RESTORE);
+                if (prev != IntPtr.Zero && prev != hwnd) SetForegroundWindow(prev);
+            }
+            if (IsIconic(hwnd)) return; // stuck; retry next tick
         }
-        if (IsIconic(hwnd)) return; // stuck; retry next tick
-        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+        RECT r;
+        if (!GetWindowRect(hwnd, out r)) return;
+        bool off = OffScreen(r);
+
+        if (!minimized)
+        {
+            // Remember where the window really is, so a parked one that the user
+            // brings to the front (taskbar click / Alt-Tab) can be put back: it
+            // would otherwise come forward while still outside the desktop, which
+            // makes the click look like it did nothing.
+            if (!off) { _stash = r; _haveStash = true; return; }
+            if (_haveStash && GetForegroundWindow() == hwnd)
+                SetWindowPos(hwnd, IntPtr.Zero, _stash.L, _stash.T,
+                             _stash.R - _stash.L, _stash.B - _stash.T,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            return;
+        }
+
+        int w = r.R - r.L, h = r.B - r.T;
+        if (w <= 0 || h <= 0) return;
+        if (!off) { _stash = r; _haveStash = true; }      // remember only a real position
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        SetWindowPos(hwnd, IntPtr.Zero, vx + vw + 100, vy + 200, w, h,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     // --- state ------------------------------------------------------------

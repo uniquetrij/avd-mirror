@@ -669,6 +669,7 @@ public static class EmuMirrorWin
     // while PrintWindow still renders the guest 1:1 (physical). Switching this
     // thread to per-monitor-DPI-aware makes the metrics match the captured image.
     [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hwnd);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hwnd);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hwnd, int cmd);
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
@@ -716,6 +717,70 @@ public static class EmuMirrorWin
         SetWindowPos(hwnd, IntPtr.Zero, vx + vw + 100, 200,
                      r.R - r.L, r.B - r.T, SWP_NOZORDER | SWP_NOACTIVATE);
         if (prev != IntPtr.Zero && prev != hwnd) SetForegroundWindow(prev);
+    }
+
+    // --- hide / show ---------------------------------------------------------
+    // Both capture paths read the window's DWM surface, so a window that is
+    // *gone* from the compositor stops producing frames: SW_HIDE froze WGC
+    // outright (0 frames in 3 s) and resumed on SW_SHOWNOACTIVATE, exactly as
+    // minimizing does. Parking the window just outside the virtual screen is
+    // the only way to get it out of sight and still capture it - measured at
+    // ~53 fps while parked. So "hide" means off-screen, never SW_HIDE.
+    static RECT stashRect; static bool haveStash;
+
+    static bool OffScreen(RECT r)
+    {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        return r.R <= vx || r.L >= vx + vw || r.B <= vy || r.T >= vy + vh;
+    }
+
+    public static string SetHidden(IntPtr hwnd, bool hide)
+    {
+        try
+        {
+            SetThreadDpiAwarenessContext(new IntPtr(-4));
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return "no-emulator";
+            // A minimized window can be neither captured nor parked. Restoring it
+            // is what the rescue path does anyway; do not fail the request for it.
+            if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+            RECT r;
+            if (!GetWindowRect(hwnd, out r)) return "failed:GetWindowRect";
+            int w = r.R - r.L, h = r.B - r.T;
+            if (w <= 0 || h <= 0) return "failed:size";
+
+            if (hide)
+            {
+                if (!OffScreen(r)) { stashRect = r; haveStash = true; }
+                int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                if (!SetWindowPos(hwnd, IntPtr.Zero, vx + vw + 100, vy + 200, w, h,
+                                  SWP_NOZORDER | SWP_NOACTIVATE)) return "failed:SetWindowPos";
+                return "hidden";
+            }
+            if (!haveStash) return "shown";          // nothing was hidden by this process
+            if (!SetWindowPos(hwnd, IntPtr.Zero, stashRect.L, stashRect.T,
+                              stashRect.R - stashRect.L, stashRect.B - stashRect.T,
+                              SWP_NOZORDER | SWP_NOACTIVATE)) return "failed:SetWindowPos";
+            return "shown";
+        }
+        catch (Exception ex) { return "failed:" + ex.GetType().Name; }
+    }
+
+    // Report what is true *now* rather than what this process last did: the user
+    // can click the parked window's taskbar entry, and Track() then brings it
+    // back on screen without telling anyone.
+    public static string HiddenState(IntPtr hwnd)
+    {
+        try
+        {
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return "no-emulator";
+            SetThreadDpiAwarenessContext(new IntPtr(-4));
+            RECT r;
+            if (!GetWindowRect(hwnd, out r)) return "no-emulator";
+            return OffScreen(r) ? "hidden" : "shown";
+        }
+        catch { return "no-emulator"; }
     }
 
     // The guest display sits inside the captured window as its client area:
@@ -885,6 +950,10 @@ $html = @'
  #inp{color:#d29922}
  #bar button{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:2px 7px;font:12px system-ui,sans-serif;cursor:pointer;line-height:16px}
  #bar button:hover{background:#30363d}
+ /* The hide toggle is a state, not a momentary action: the emulator window is
+    currently parked off-screen. */
+ #bar button[aria-pressed="true"]{background:#1f6feb;border-color:#1f6feb;color:#fff}
+ #bar button[aria-pressed="true"]:hover{background:#388bfd}
   /* Soft nav keys sit under the screen, centred on 25/50/75% of the *displayed
      guest image* rather than the window: the image is object-fit:contain, so
      whenever there are side letterboxes the two widths differ and anchoring to
@@ -1068,7 +1137,7 @@ $html = @'
  <body><div id="wrap">
   <div id="barrow">
   <div id="bar"><b>AVD Mirror</b><span id="st">connecting...</span><span id="src"></span><span id="fps"></span><span id="dim"></span>
-   <button id="sdir">Natural &#8645;</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span></div>
+   <button id="sdir">Natural &#8645;</button><button id="hideemu" title="Hide the emulator window - it stays off-screen and keeps mirroring" aria-pressed="false">Hide</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span></div>
    <!-- The help button is a sibling of the tool strip, not its last item: the
         compact layout makes the strip a single nowrap row that overflows, and
         an in-flow button at the end of it lands past the right edge of the
@@ -1089,6 +1158,7 @@ $html = @'
     <dt>scroll / fling</dt><dd>wheel</dd>
     <dt>scroll sideways</dt><dd>shift + wheel</dd>
     <dt>scroll direction</dt><dd>the &ldquo;Natural&rdquo; toggle in the toolbar</dd>
+    <dt>hide the window</dt><dd>the &ldquo;Hide&rdquo; toggle - the emulator keeps mirroring off-screen</dd>
     <dt>pinch &amp; spread</dt><dd>ctrl + drag, or ctrl + wheel</dd>
     <dt>Back</dt><dd>right click (no drag)</dd>
     <dt>Home</dt><dd>middle click</dd>
@@ -1607,6 +1677,50 @@ function pinchWheel(cx,cy,delta){
 function send(q){ return fetch('/input?'+q,{cache:'no-store'}).catch(()=>{}); }
 function nav(a){ send('nav='+a); }
 
+// --- hide / show the emulator window -----------------------------------------
+// Hiding it for real (SW_HIDE) or minimizing it stops the capture dead: both
+// take the window out of the DWM composition the frame comes from (measured:
+// 0 frames in 3 s hidden, ~53 fps with the window merely parked outside the
+// virtual screen). So the server parks it off-screen instead, which is out of
+// sight and still mirroring. The state is read back from the server rather
+// than kept here alone, because a reload - or a toggle from the VS Code
+// command palette - changes it without this page doing anything.
+const hideBtn=document.getElementById('hideemu');
+let emuHidden=false;
+function paintHide(){
+  hideBtn.textContent=emuHidden?'Show':'Hide';
+  hideBtn.setAttribute('aria-pressed',emuHidden?'true':'false');
+  hideBtn.title=emuHidden?'Bring the emulator window back on screen'
+                         :'Hide the emulator window - it stays off-screen and keeps mirroring';
+}
+async function syncHide(){
+  try{
+    const j=await (await fetch('/window?state=1',{cache:'no-store'})).json();
+    if(j.state==='no-emulator'){ emuHidden=false; paintHide(); return; }
+    emuHidden=!!j.hidden;
+  }catch(e){ return; }              // server restarting: keep the last label
+  paintHide();
+}
+hideBtn.addEventListener('click',async()=>{
+  hideBtn.disabled=true;
+  try{
+    const j=await (await fetch('/window?hidden='+(emuHidden?'0':'1'),{cache:'no-store'})).json();
+    if(!j.ok){
+      // "no-emulator" is a normal state, not a failure worth shouting about.
+      note(j.state==='no-emulator'?'no emulator window to '+(emuHidden?'show':'hide')
+                                   :'cannot move the window: '+j.state);
+      emuHidden=!!j.hidden;
+    } else {
+      emuHidden=!!j.hidden;
+      note(emuHidden?'emulator window hidden - still mirroring':'emulator window restored');
+    }
+  }catch(e){ note('window toggle failed'); }
+  finally{ paintHide(); hideBtn.disabled=false; }
+});
+paintHide();
+syncHide();
+setInterval(syncHide,2000);
+
 // --- AVD picker -------------------------------------------------------------
 // The AVD manager (avd.ps1) runs on its own port and is a separate origin, so
 // these calls are cross-origin; it sends Access-Control-Allow-Origin: *.
@@ -1944,6 +2058,35 @@ while ($true) {
           if (Get-Process wgccap -ErrorAction SilentlyContinue) { $cap = 1 }
           Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($reply + ':' + $cap))
         }
+    elseif ($path -like '/window*') {
+      # /window?hidden=1|0|toggle -> park the emulator window just outside the
+      # virtual screen (out of sight, still captured) or put it back;
+      # /window?state=1 only reports which of the two it currently is.
+      # Lives here rather than in the capturer because the page is served from
+      # this port and the PrintWindow fallback needs the same control.
+      $p = Get-QueryParams $path
+      $state = ''
+      $ok = $true
+      try {
+        if ($p.ContainsKey('state')) {
+          $state = [EmuMirrorWin]::HiddenState($script:EmuHwnd)
+        }
+        else {
+          $hide = $false
+          if ($p.ContainsKey('hidden')) {
+            $v = $p['hidden']
+            if ($v -eq 'toggle') { $hide = ([EmuMirrorWin]::HiddenState($script:EmuHwnd) -ne 'hidden') }
+            else { $hide = ($v -ne '0' -and $v -ne 'false') }
+          }
+          $state = [EmuMirrorWin]::SetHidden($script:EmuHwnd, $hide)
+          if ($state.StartsWith('failed')) { $ok = $false }
+        }
+      } catch { $state = 'failed:' + $_.Exception.Message; $ok = $false }
+      if ($state -eq 'no-emulator') { $ok = $false }
+      $body = '{"ok":' + $(if ($ok) { 'true' } else { 'false' }) + ',"state":"' + $state +
+              '","hidden":' + $(if ($state -eq 'hidden') { 'true' } else { 'false' }) + '}'
+      Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
+    }
     elseif ($path -like '/gsize*') {
       # guest screen size, used for client -> guest coordinate mapping
       $gsize = Get-GuestSize

@@ -110,6 +110,10 @@ const ext = require('./extension.js');
   // The stop path is the one that was broken, so it is called for real.
   await call('avdMirror.stopAvd');
   await call('avdMirror.startAvd', 'ai_dating');
+  // toggleHide is intentionally NOT invoked here: it talks to a live mirror
+  // server, and on a machine where one is running it would move the user's real
+  // emulator window. Registration is the part the harness can check safely.
+  console.log('has toggleHide:', !!run('avdMirror.toggleHide'));
 
   // Argument shapes. VS Code hands different things to the same command
   // depending on where it was invoked from, and passing that straight through

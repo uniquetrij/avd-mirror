@@ -47,6 +47,18 @@ Server logs go to the **AVD Mirror** output channel.
 The page also runs on its own at <http://127.0.0.1:8777/> — the extension only
 embeds it.
 
+### Hiding the emulator window
+
+The **Hide** button in the mirror's toolbar (or `AVD Mirror: Hide / Show Emulator
+Window` from the Command Palette) moves the emulator window just outside the
+virtual screen. It is out of sight but still captured, so the mirror keeps
+running at full rate; **Show** puts it back exactly where it was.
+
+The window cannot be hidden outright or minimized away: the capture reads its DWM
+surface, so a hidden or minimized window produces no frames at all. Minimizing is
+therefore also treated as "park it" — both capture paths restore the window and
+move it off-screen.
+
 ## What the extension does and does not do
 
 It only supervises `scripts/mirror.ps1` and embeds `http://127.0.0.1:8777/`.

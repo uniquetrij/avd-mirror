@@ -266,7 +266,7 @@ async function loadPage() {
     // The page addresses its own endpoints with root-relative paths ('/touch',
     // '/input', '/gsize', '/frame.jpg'). Inlined into a webview those would
     // resolve against the webview origin and 404, so point them at the server.
-    html = html.replace(/(['"])\/(touch|input|gsize|frame\.jpg)\b/g, `$1${base}/$2`);
+    html = html.replace(/(['"])\/(touch|input|gsize|window|frame\.jpg)\b/g, `$1${base}/$2`);
     return html;
 }
 
@@ -655,6 +655,41 @@ async function stopAvd(force) {
   );
 }
 
+/**
+ * Park the emulator window off-screen, or bring it back.
+ *
+ * Hiding for real would stop the mirror: the capture reads the window's DWM
+ * surface, so a hidden (SW_HIDE) or minimized window produces no frames at all.
+ * The server parks it just outside the virtual screen instead - out of sight,
+ * and still captured at full rate.
+ */
+async function toggleHide() {
+  let body;
+  try {
+    const res = await fetch(`http://${HOST}:${PORT}/window?hidden=toggle`, { cache: 'no-store' });
+    body = await res.json();
+  } catch (e) {
+    vscode.window.showErrorMessage(
+      `AVD Mirror: mirror server unreachable (${e && e.message ? e.message : e})`
+    );
+    return;
+  }
+  if (!body.ok) {
+    if (body.state === 'no-emulator') {
+      vscode.window.setStatusBarMessage('AVD Mirror: no emulator window to move', 3000);
+    } else {
+      vscode.window.showWarningMessage(`AVD Mirror: cannot move the emulator window (${body.state})`);
+    }
+    return;
+  }
+  vscode.window.setStatusBarMessage(
+    body.hidden
+      ? 'AVD Mirror: emulator window hidden - still mirroring'
+      : 'AVD Mirror: emulator window restored',
+    4000
+  );
+}
+
 function activate(context) {
   const provider = new MirrorViewProvider();
   const avdTree = new AvdTreeProvider();
@@ -703,6 +738,7 @@ function activate(context) {
       setTimeout(startServer, 600);
     }),
     vscode.commands.registerCommand('avdMirror.reload', () => provider.reload()),
+    vscode.commands.registerCommand('avdMirror.toggleHide', toggleHide),
     output
   );
 }
