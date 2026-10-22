@@ -11,9 +11,9 @@
 
   Minimized windows cannot be captured (DWM has no surface), so when the
   emulator is minimized the script auto-restores it and parks it just outside
-  the virtual screen (invisible, still rendering). If the user Alt-Tabs / clicks
-  the taskbar entry for that off-screen window, it snaps back to its last
-  on-screen position.
+  the virtual screen (invisible, still rendering), then drops its taskbar button
+  and Alt-Tab entry so nothing of it is left in the shell. GET /window?hidden=1
+  does the same on demand; showing it puts all three back.
 
   Serves:
     GET /            -> HTML mirror page (auto-polling JPEG view)
@@ -655,6 +655,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 public static class EmuMirrorWin
 {
@@ -676,16 +677,42 @@ public static class EmuMirrorWin
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hwnd, int index);
+    [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr hwnd, int index, int value);
+
+    // Shell taskbar list. Used only to add/remove this window's taskbar button:
+    // the window itself stays composed, so the capture is untouched.
+    [ComImport, Guid("56FDF344-FD6D-11d0-958A-006097C9A090")]
+    class CTaskbarList { }
+    [ComImport, Guid("56FDF342-FD6D-11d0-958A-006097C9A090"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface ITaskbarList
+    {
+        void HrInit();
+        void AddTab(IntPtr hwnd);
+        void DeleteTab(IntPtr hwnd);
+        void ActivateTab(IntPtr hwnd);
+        void SetActiveAlt(IntPtr hwnd);
+    }
 
     const uint PW_RENDERFULLCONTENT = 0x00000002;
+    const uint SWP_NOSIZE    = 0x0001;
+    const uint SWP_NOMOVE   = 0x0002;
     const uint SWP_NOZORDER  = 0x0004;
     const uint SWP_NOACTIVATE= 0x0010;
+    const uint SWP_FRAMECHANGED = 0x0020;
+    const int  GWL_EXSTYLE   = -20;
+    const int  WS_EX_TOOLWINDOW = 0x00000080;
     const int  SW_RESTORE    = 9;
     const int  SW_SHOWNOACTIVATE = 8;
     const int  SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77;
     const int  SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
 
     static RECT lastNormal; static bool haveLast;
+    // A window that is already in the foreground when it is parked must not be
+    // mistaken for the user clicking its way back: only a foreground change
+    // *after* parking (they focused something else, then this window again) is.
+    static bool sawFgOther;
 
     // User Alt-Tabs / taskbar-clicks an off-screen window -> put it back where it was.
     static void Track(IntPtr hwnd)
@@ -696,11 +723,16 @@ public static class EmuMirrorWin
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         bool off = r.R <= vx || r.L >= vx + vw || r.B <= vy || r.T >= vy + vh;
-        if (!off) { lastNormal = r; haveLast = true; return; }
-        if (haveLast && GetForegroundWindow() == hwnd)
+        if (!off) { lastNormal = r; haveLast = true; sawFgOther = false; return; }
+        if (GetForegroundWindow() != hwnd) { sawFgOther = true; return; }
+        if (haveLast && sawFgOther)
+        {
             SetWindowPos(hwnd, IntPtr.Zero, lastNormal.L, lastNormal.T,
                          lastNormal.R - lastNormal.L, lastNormal.B - lastNormal.T,
                          SWP_NOZORDER | SWP_NOACTIVATE);
+            Stealth(hwnd, false);                    // back on screen, back in the shell
+            sawFgOther = false;
+        }
     }
 
     // Minimized windows cannot be captured: restore quietly and park off-screen.
@@ -716,6 +748,8 @@ public static class EmuMirrorWin
         int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         SetWindowPos(hwnd, IntPtr.Zero, vx + vw + 100, 200,
                      r.R - r.L, r.B - r.T, SWP_NOZORDER | SWP_NOACTIVATE);
+        Stealth(hwnd, true);
+        sawFgOther = (prev != hwnd);
         if (prev != IntPtr.Zero && prev != hwnd) SetForegroundWindow(prev);
     }
 
@@ -733,6 +767,70 @@ public static class EmuMirrorWin
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         return r.R <= vx || r.L >= vx + vw || r.B <= vy || r.T >= vy + vh;
+    }
+
+    // --- no taskbar button, no Alt-Tab entry ---------------------------------
+    // Parking the window off-screen hides it from the display but leaves a
+    // taskbar button and an Alt-Tab entry behind - it reads as "minimized", not
+    // as gone. Two shell-level changes remove those traces without touching the
+    // window's DWM surface, so the mirror keeps capturing:
+    //   * ITaskbarList::DeleteTab drops the taskbar button (AddTab restores it).
+    //   * WS_EX_TOOLWINDOW keeps the shell from listing it as a switchable
+    //     window, which is what removes it from Alt-Tab.
+    // Both are applied and reverted on the same pause/resume transitions as the
+    // off-screen parking itself.
+    static void Tab(IntPtr hwnd, bool add)
+    {
+        // ITaskbarList is an STA object and the host thread may be MTA, so the
+        // COM call runs on a short lived STA thread; never on the per frame path.
+        var t = new Thread(() =>
+        {
+            try
+            {
+                var tb = (ITaskbarList)new CTaskbarList();
+                tb.HrInit();
+                if (add) tb.AddTab(hwnd); else tb.DeleteTab(hwnd);
+            }
+            catch { }
+        });
+        t.SetApartmentState(ApartmentState.STA);
+        t.IsBackground = true;
+        t.Start();
+        t.Join(400);
+    }
+
+    static IntPtr stealthHwnd; static bool stealthed;
+
+    // Idempotent, and safe when another process (mirror.ps1 / wgccap) is the one
+    // that hid the window: the ex-style bit is the shared source of truth, the
+    // flags only stop us from repeating the COM call on every frame.
+    static void Stealth(IntPtr hwnd, bool on)
+    {
+        int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+        if (ex == 0) return;                             // window went away
+        bool has = (ex & WS_EX_TOOLWINDOW) != 0;
+        if (on)
+        {
+            if (has && stealthed && stealthHwnd == hwnd) return;
+            if (!has)
+            {
+                SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_TOOLWINDOW);
+                SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+                             SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            Tab(hwnd, false);
+            stealthed = true; stealthHwnd = hwnd;
+            return;
+        }
+        if (!has && !(stealthed && stealthHwnd == hwnd)) return;   // nothing of ours to undo
+        if (has)
+        {
+            SetWindowLong(hwnd, GWL_EXSTYLE, ex & ~WS_EX_TOOLWINDOW);
+            SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+                         SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        Tab(hwnd, true);
+        stealthed = false; stealthHwnd = IntPtr.Zero;
     }
 
     public static string SetHidden(IntPtr hwnd, bool hide)
@@ -756,8 +854,12 @@ public static class EmuMirrorWin
                 int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
                 if (!SetWindowPos(hwnd, IntPtr.Zero, vx + vw + 100, vy + 200, w, h,
                                   SWP_NOZORDER | SWP_NOACTIVATE)) return "failed:SetWindowPos";
+                Stealth(hwnd, true);
+                sawFgOther = (GetForegroundWindow() != hwnd);
                 return "hidden";
             }
+            Stealth(hwnd, false);                    // undo it even if we cannot re-park
+            sawFgOther = false;
             if (!haveStash) return "shown";          // nothing was hidden by this process
             if (!SetWindowPos(hwnd, IntPtr.Zero, stashRect.L, stashRect.T,
                               stashRect.R - stashRect.L, stashRect.B - stashRect.T,

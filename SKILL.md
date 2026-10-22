@@ -38,6 +38,24 @@ day-to-day use, see [readme.md](./readme.md).
   `?state=1` reports `shown` / `hidden` / `no-emulator` as JSON. The state is read
   back from the window rect rather than from what the server last did, because
   the parked window can be brought forward by the user.
+ - **A parked window is only invisible, not gone — so hiding also de-shells it.**
+  Off-screen parking leaves a taskbar button (`qemu-system-x86_64 - 1 running
+  window`, verified with UI Automation on `Shell_TrayWnd` before/after) and an
+  Alt-Tab entry, which reads as "minimized" rather than hidden. Both capture
+  paths therefore also call `ITaskbarList::DeleteTab(hwnd)` and add
+  `WS_EX_TOOLWINDOW` to the ex-style (`SWP_FRAMECHANGED|NOSIZE|NOMOVE|NOZORDER|
+  NOACTIVATE`, so geometry is untouched: rect identical before/after), and undo
+  both on restore. Neither touches the DWM surface — frames kept arriving
+  (`frames` 747 → 829) with both applied. `ITaskbarList` is STA while wgccap's
+  main thread is MTA, so the COM call runs on a short-lived `ApartmentState.STA`
+  background thread; never on the frame path.
+ - **Restoring a parked window needs a foreground *change*.** `Track` /
+  `RescueIfMinimized` put a parked window back when it becomes foreground — but
+  only if the foreground moved away first (`sawFgOther` / `_sawOther`). Without
+  that guard a window that was already in front when hidden was pulled straight
+  back out of its parked position on the next tick. With stealth applied there is
+  no taskbar button or Alt-Tab entry to click, so the mirror's **Show** button /
+  the palette command is the way back.
 - **Frames are cropped to the guest display.** Both helpers remove the window chrome (title bar + borders), so the served JPEG *is* the guest screen at the window's client size (`270x570` for a `1080x2280` guest, `270x128` for `2280x1080`). The page can therefore map image-fraction → guest px directly. `--gsize WxH` (wgccap) and `Get-GuestSize` (mirror.ps1) supply the guest size used by the crop — and both must be the **rotated** size, not `wm size`, for rotation to work (see below).
 - Both helpers are **per-monitor DPI aware** (`SetProcessDpiAwarenessContext(-4)` / `SetThreadDpiAwarenessContext(-4)`). Without it the process measures virtualized metrics (÷1.25 at 125%) while `PrintWindow` still renders the guest 1:1 *physical*, producing a cropped, mis-mapped image.
 - The WGC frame pool is created once with the item size; on a window resize `Direct3D11CaptureFramePool.Recreate` is called, otherwise stale-sized frames are returned forever.
@@ -170,8 +188,8 @@ Invoke-WebRequest http://127.0.0.1:8778/frame.jpg      # WGC JPEG (CORS *)
 Invoke-WebRequest http://127.0.0.1:8777/frame.jpg      # PrintWindow JPEG (cropped to the guest display)
 Invoke-WebRequest http://127.0.0.1:8777/gsize          # "1080x2280" (guest display)
 Invoke-WebRequest "http://127.0.0.1:8777/window?state=1"        # {"ok":true,"state":"shown","hidden":false}
-Invoke-WebRequest "http://127.0.0.1:8777/window?hidden=1"       # park the emulator window off-screen
-Invoke-WebRequest "http://127.0.0.1:8777/window?hidden=0"       # put it back where it was
+Invoke-WebRequest "http://127.0.0.1:8777/window?hidden=1"       # park off-screen, drop taskbar button + Alt-Tab entry
+Invoke-WebRequest "http://127.0.0.1:8777/window?hidden=0"       # put it back where it was, restore both
 Invoke-WebRequest "http://127.0.0.1:8777/touch?p=1:540:1200"   # pointer down
 Invoke-WebRequest "http://127.0.0.1:8777/touch?p="             # lift all
 Invoke-WebRequest "http://127.0.0.1:8777/input?nav=back"       # Back

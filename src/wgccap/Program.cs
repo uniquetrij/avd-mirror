@@ -125,12 +125,84 @@ internal static class Program
     // positioned outside the virtual screen still has a DWM surface, while a
     // hidden (SW_HIDE) or minimized one has none and the mirror freezes.
     static RECT _stash; static bool _haveStash;
+    static bool _sawOther;                     // foreground moved away after parking
 
     static bool OffScreen(RECT r)
     {
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         return r.R <= vx || r.L >= vx + vw || r.B <= vy || r.T >= vy + vh;
+    }
+
+    // --- no taskbar button, no Alt-Tab entry ------------------------------
+    // An off-screen window still owns a taskbar button and an Alt-Tab entry, so
+    // it reads as "minimized" rather than gone. ITaskbarList::DeleteTab drops the
+    // button and WS_EX_TOOLWINDOW takes it out of Alt-Tab; neither touches the
+    // DWM surface, so WGC keeps delivering frames (verified: frames kept coming
+    // with both applied).
+    [ComImport, Guid("56FDF344-FD6D-11d0-958A-006097C9A090")]
+    class CTaskbarList { }
+
+    [ComImport, Guid("56FDF342-FD6D-11d0-958A-006097C9A090"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface ITaskbarList
+    {
+        void HrInit();
+        void AddTab(IntPtr hwnd);
+        void DeleteTab(IntPtr hwnd);
+        void ActivateTab(IntPtr hwnd);
+        void SetActiveAlt(IntPtr hwnd);
+    }
+
+    const int GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x00000080;
+    const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_FRAMECHANGED = 0x0020;
+
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hWnd, int index);
+    [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr hWnd, int index, int value);
+
+    // ITaskbarList is an STA object and this process is MTA: run it on a short
+    // lived STA thread, and never on the frame path (only on park/restore).
+    static void Tab(Action act)
+    {
+        var t = new Thread(() => { try { act(); } catch { } });
+        t.SetApartmentState(ApartmentState.STA);
+        t.IsBackground = true;
+        t.Start();
+        t.Join(400);
+    }
+
+    static bool _stealthed;
+
+    // Idempotent, and safe when the other capturer (mirror.ps1) is the one that
+    // hid the window: the ex-style bit is the shared source of truth, the flag
+    // only stops us from repeating the COM call on every tick.
+    static void Stealth(IntPtr hwnd, bool on)
+    {
+        int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+        if (ex == 0) return;                              // window went away
+        bool has = (ex & WS_EX_TOOLWINDOW) != 0;
+        if (on)
+        {
+            if (has && _stealthed) return;
+            if (!has)
+            {
+                SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_TOOLWINDOW);
+                SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+                             SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            Tab(() => { var tb = (ITaskbarList)new CTaskbarList(); tb.HrInit(); tb.DeleteTab(hwnd); });
+            _stealthed = true;
+            return;
+        }
+        if (!has && !_stealthed) return;                  // nothing of ours to undo
+        if (has)
+        {
+            SetWindowLong(hwnd, GWL_EXSTYLE, ex & ~WS_EX_TOOLWINDOW);
+            SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+                         SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        Tab(() => { var tb = (ITaskbarList)new CTaskbarList(); tb.HrInit(); tb.AddTab(hwnd); });
+        _stealthed = false;
     }
 
     static void RescueIfMinimized(IntPtr hwnd)
@@ -157,22 +229,32 @@ internal static class Program
             // Remember where the window really is, so a parked one that the user
             // brings to the front (taskbar click / Alt-Tab) can be put back: it
             // would otherwise come forward while still outside the desktop, which
-            // makes the click look like it did nothing.
-            if (!off) { _stash = r; _haveStash = true; return; }
-            if (_haveStash && GetForegroundWindow() == hwnd)
+            // makes the click look like it did nothing. Only a foreground change
+            // *after* parking counts - a window that was already in front when it
+            // was parked must not be pulled straight back out of its new position.
+            if (!off) { _stash = r; _haveStash = true; _sawOther = false; return; }
+            if (GetForegroundWindow() != hwnd) { _sawOther = true; return; }
+            if (_haveStash && _sawOther)
+            {
                 SetWindowPos(hwnd, IntPtr.Zero, _stash.L, _stash.T,
                              _stash.R - _stash.L, _stash.B - _stash.T,
                              SWP_NOZORDER | SWP_NOACTIVATE);
+                Stealth(hwnd, false);
+                _sawOther = false;
+            }
             return;
         }
 
         int w = r.R - r.L, h = r.B - r.T;
         if (w <= 0 || h <= 0) return;
         if (!off) { _stash = r; _haveStash = true; }      // remember only a real position
+        IntPtr fgBefore = GetForegroundWindow();
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         SetWindowPos(hwnd, IntPtr.Zero, vx + vw + 100, vy + 200, w, h,
                      SWP_NOZORDER | SWP_NOACTIVATE);
+        Stealth(hwnd, true);
+        _sawOther = (fgBefore != hwnd);
     }
 
     // --- state ------------------------------------------------------------

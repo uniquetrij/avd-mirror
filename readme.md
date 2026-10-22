@@ -50,14 +50,27 @@ embeds it.
 ### Hiding the emulator window
 
 The **Hide** button in the mirror's toolbar (or `AVD Mirror: Hide / Show Emulator
-Window` from the Command Palette) moves the emulator window just outside the
-virtual screen. It is out of sight but still captured, so the mirror keeps
-running at full rate; **Show** puts it back exactly where it was.
+Window` from the Command Palette) takes the emulator off the desktop completely,
+and the mirror keeps running at full rate; **Show** puts it back exactly where it
+was.
 
-The window cannot be hidden outright or minimized away: the capture reads its DWM
-surface, so a hidden or minimized window produces no frames at all. Minimizing is
-therefore also treated as "park it" — both capture paths restore the window and
-move it off-screen.
+"Hiding" is three changes to the window, none of which touches the DWM surface
+the capture reads (measured: frames keep arriving with all three applied):
+
+| Change | Effect |
+| --- | --- |
+| move to just outside the virtual screen | nothing on screen |
+| `ITaskbarList::DeleteTab` | no taskbar button |
+| `WS_EX_TOOLWINDOW` on the ex-style | no Alt-Tab entry |
+
+The window cannot be hidden outright or minimized away: a `SW_HIDE` or minimized
+window leaves the DWM composition, so it produces no frames at all (measured: 0
+frames in 3 s hidden, ~53 fps parked). Minimizing is therefore also treated as
+"park it" — both capture paths restore the window, move it off-screen and apply
+the same two shell changes.
+
+Since the parked window has no taskbar button and no Alt-Tab entry, the only way
+back is **Show** in the mirror toolbar or the Command Palette command.
 
 ## What the extension does and does not do
 
