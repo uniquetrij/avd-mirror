@@ -180,6 +180,11 @@ powershell -ExecutionPolicy Bypass -File .github/skills/mirror-emulator/scripts/
 
 AVD controls appear in two places: the **AVDs** view in the activity bar (start / stop / refresh, with the running one marked) and a picker in the **mirror page toolbar** for quick start/stop while the mirror is open.
 
+- **The mirror survives the emulator being replaced.** Stopping an AVD used to take the mirror down with it: the accept loop exited on emulator exit (`EMULATOR_EXITED`), so restarting the emulator left the page permanently on "reconnecting". The emulator's window handle and console port are now re-acquired on the request path (`Update-EmulatorTarget`), and the server keeps serving.
+- **The WGC capturer is bound to the emulator *window*,** so a replaced emulator leaves it capturing a window that no longer exists — it stops producing frames and then exits, taking port 8778 with it. The capturer is restarted alongside the emulator, and a rate-limited liveness check (`Ensure-Capturer`, one `Get-Process` every 2 s) covers a capturer that dies for any other reason. Without this the page silently fell back to PrintWindow: slower, and it has the channel-swap tint bug.
+- **"No emulator running" is a normal state,** not a lost connection, and the page says so in amber rather than reporting "reconnecting" in red. The mirror answers `/frame.jpg` with `503 no emulator running`, and the page reads the response body rather than only the status.
+- **The webview's CSP must list port 8779.** The mirror page calls the AVD manager cross-origin; without it the panel's AVD picker reports "no manager" while the browser tab works fine (the tab has no CSP).
+
 > ⚠️ If `/status` `age=` keeps growing while the guest screen is visibly changing, capture has **stalled**, not gone idle. Restart `wgccap.exe` — and check the two WGC traps above (`TryGetNextFrame` must be drained in a loop; the callback must not block). `/health` keeps answering `ok` while stalled, so health checks alone will not catch it.
 
 > ⚠️ `age=` also grows legitimately on a **static** screen, because WGC only produces frames when content changes. To tell "idle" from "stalled", cause a screen change (e.g. a nav key) and confirm `frames` and `age=` both move.

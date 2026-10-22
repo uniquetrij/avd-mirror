@@ -95,6 +95,18 @@ if (-not $qemu) {
 }
 $hwnd = $qemu.MainWindowHandle
 
+# The emulator window and its console port are re-acquired rather than fixed.
+# Stopping and starting an AVD replaces the emulator process: the new one has a
+# different window handle, and it may land on a different adb port, so the old
+# console connection is dead too. The mirror used to exit when the emulator
+# exited, which meant stopping an AVD from the UI took the mirror down with it
+# and starting it again left the page on "reconnecting" - the controls were
+# unusable for the workflow they exist to support.
+$script:EmuProc = $qemu
+$script:EmuHwnd = $hwnd
+$script:ConsolePort = 5554
+$script:EmuLost = $false
+
 # --- adb + emulator console --------------------------------------------------
 # Touch is injected through the emulator console ("event send") instead of
 # `adb shell input`: only the console can emit raw multi-touch (MT protocol B)
@@ -188,7 +200,7 @@ function Invoke-Rotate {
                 $script:GSH = [int](($size -split 'x')[1])
                 # The emulator window keeps its old aspect and would letterbox the rotated
                 # guest inside itself, so reshape it before the capturer re-reads the crop.
-                [void][EmuMirrorWin]::ReshapeToGuest($hwnd, $GSW, $GSH)
+                [void][EmuMirrorWin]::ReshapeToGuest($script:EmuHwnd, $GSW, $GSH)
                 Start-Sleep -Milliseconds 400          # let the window settle before cropping
                 # The capturer's crop is fixed at its startup, so it must follow the rotation.
                 Restart-Capturer -GuestSize $size
@@ -258,11 +270,12 @@ function Restart-Capturer {
   }
 }
 
-# the console listens on the emulator's adb port (emulator-5554 -> 5554)
-$consolePort = 5554
+# The console listens on the emulator's adb port (emulator-5554 -> 5554). It is
+# re-read when the emulator is replaced, so this is only the initial value.
+$script:ConsolePort = 5554
 try {
   foreach ($line in (Invoke-Adb -Arguments @('devices'))) {
-    if ($line -match '^\s*emulator-(\d+)\s+device') { $consolePort = [int]$Matches[1]; break }
+    if ($line -match '^\s*emulator-(\d+)\s+device') { $script:ConsolePort = [int]$Matches[1]; break }
   }
 } catch { }
 
@@ -290,7 +303,7 @@ function Connect-Console {
   if (Test-Path $tokenFile) { $token = (Get-Content $tokenFile -Raw).Trim() }
   $c = New-Object System.Net.Sockets.TcpClient
   $c.NoDelay = $true
-  $c.Connect('127.0.0.1', $consolePort)
+  $c.Connect('127.0.0.1', $script:ConsolePort)
   $ns = $c.GetStream()
   $w = New-Object System.IO.StreamWriter($ns)
   $w.AutoFlush = $true
@@ -318,6 +331,72 @@ function Send-Console {
     } catch { Close-Console }
   }
   return $false
+}
+
+# Re-point the mirror at the emulator when the one it was started with is gone.
+# Called from the request path, which is the only place that runs while the
+# emulator is being replaced: the accept loop blocks in AcceptTcpClient() and
+# cannot poll. The check is a property read on an already-held process object,
+# so it is cheap enough to do on every request.
+function Update-EmulatorTarget {
+  if ($script:EmuProc -and -not $script:EmuProc.HasExited) { return $true }
+
+  $p = Get-Process qemu-system-x86_64 -ErrorAction SilentlyContinue |
+       Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+  if (-not $p) {
+    if (-not $script:EmuLost) {
+      # Console.Out rather than Write-Output: the output stream is buffered when
+      # it is redirected to a file or a pipe, so these lifecycle messages would
+      # not appear until the process exited - exactly when they are least
+      # useful.
+      [Console]::Out.WriteLine('EMULATOR_EXITED - waiting for an emulator to appear')
+      [Console]::Out.Flush()
+      $script:EmuLost = $true
+    }
+    return $false
+  }
+  $script:EmuProc = $p
+  $script:EmuHwnd = $p.MainWindowHandle
+  $script:EmuLost = $false
+
+  # The console port follows the new emulator's adb port, and the old console
+  # connection belongs to the process that just died.
+  Close-Console
+  $script:ConsolePort = 5554
+  try {
+    foreach ($line in (Invoke-Adb -Arguments @('devices'))) {
+      if ($line -match '^\s*emulator-(\d+)\s+device') { $script:ConsolePort = [int]$Matches[1]; break }
+    }
+  } catch { }
+  try { Connect-Console } catch { }
+
+  # The WGC capturer is bound to the emulator *window*, so a replaced emulator
+  # leaves it capturing a window that no longer exists: it stops producing
+  # frames and then exits, taking port 8778 with it. The page then fails to
+  # fetch and shows "reconnecting" even though the mirror is fine. Restart it
+  # against the new window.
+  try { Restart-Capturer -GuestSize (Get-GuestSize) } catch { }
+
+  # Console.Out rather than Write-Output: the output stream is buffered when it
+  # is redirected to a file or a pipe, so these lifecycle messages would not
+  # appear until the process exited - exactly when they are least useful.
+  [Console]::Out.WriteLine("emulator replaced - hwnd=$($script:EmuHwnd) console=$($script:ConsolePort)")
+  [Console]::Out.Flush()
+  return $true
+}
+
+# Keep the WGC capturer alive. It can die on its own - the window it was
+# capturing went away, or it crashed - and then the page falls back to
+# PrintWindow: slower, and it has the channel-swap tint bug. The check is
+# rate-limited so it costs one Get-Process every couple of seconds rather than
+# one per request (the page polls at ~100/s).
+$script:CapCheckAt = [datetime]::MinValue
+function Ensure-Capturer {
+  if (([datetime]::UtcNow - $script:CapCheckAt).TotalMilliseconds -lt 2000) { return }
+  $script:CapCheckAt = [datetime]::UtcNow
+  if (Get-Process wgccap -ErrorAction SilentlyContinue) { return }
+  if (-not $script:EmuProc -or $script:EmuProc.HasExited) { return }   # no window to capture
+  try { Restart-Capturer -GuestSize (Get-GuestSize) } catch { }
 }
 
 # --- touch engine: host pointer state -> MT protocol B events ----------------
@@ -965,7 +1044,12 @@ async function grab(url,since){
   const u=since?url+sep+'since='+encodeURIComponent(since):url;
   const r=await fetch(u,{cache:'no-store',mode:'cors'});
   if(r.status===304) return null;                  // unchanged - nothing to decode
-  if(!r.ok) throw new Error('HTTP '+r.status);
+  if(!r.ok){
+    // Carry the server's explanation through, so "no emulator running" reaches
+    // the status bar instead of a bare "HTTP 503".
+    let d=''; try{ d=await r.text(); }catch(_){}
+    throw new Error(d&&d.trim()?d.trim():('HTTP '+r.status));
+  }
   const b=await r.blob();
   if(b.size<500) throw new Error('empty frame');
   const seq=r.headers.get('X-Frame-Seq');
@@ -1005,7 +1089,15 @@ async function tick(){
     const el=(performance.now()-t0)/1000;
     if(el>=1){ fps.textContent=(n/el).toFixed(0)+' fps'; n=0; t0=performance.now(); }
     live=true;
-  }catch(e){ st.textContent='reconnecting... ('+e+')'; st.style.color='#f85149'; }
+  }catch(e){
+    // "no emulator running" is a normal state - the AVD can be stopped from
+    // the toolbar - so it is reported as such rather than as a lost connection.
+    // Otherwise the panel reads "reconnecting" while the server is perfectly
+    // healthy, which points the reader at the wrong problem.
+    const noEmu=/no emulator/i.test(e&&e.message?e.message:String(e));
+    st.textContent=noEmu?'no emulator running':'reconnecting... ('+e+')';
+    st.style.color=noEmu?'#d29922':'#f85149';
+  }
   // Self-paced. A fixed 80 ms delay capped the mirror at ~12 fps even though the
   // capturer answers in ~15 ms, so every frame the eye saw was up to 80 ms stale
   // on top of its own age -- the dominant lag once the input path was fixed.
@@ -1509,7 +1601,7 @@ $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Lo
 $listener.Start()
 $rescue = -not $NoRescue
 Write-Output "MIRROR listening on http://127.0.0.1:$Port/  hwnd=$hwnd rescue=$rescue"
-Write-Output "guest $gsize  touch: emulator console 127.0.0.1:$consolePort"
+Write-Output "guest $gsize  touch: emulator console 127.0.0.1:$script:ConsolePort"
 [void](Send-Console 'ping')
 if ($script:Console) { Write-Output 'emulator console connected - multi-touch gestures enabled' }
 else { Write-Output 'WARNING: emulator console unreachable - touch input will fail (needs a running AVD)' }
@@ -1519,7 +1611,10 @@ else { Write-Output 'WARNING: emulator console unreachable - touch input will fa
 $script:lastRot = Get-GuestRotation
 
 while ($true) {
-  if ($qemu.HasExited) { Write-Output 'EMULATOR_EXITED'; break }
+  # The emulator may have been stopped and restarted. Do NOT exit: the AVD
+  # controls exist precisely so an emulator can be cycled, and the mirror
+  # quitting on emulator exit left the page permanently on "reconnecting".
+  # The target is re-acquired from the request path instead.
   $tcp = $listener.AcceptTcpClient()
     try {
       $tcp.ReceiveTimeout = 5000
@@ -1536,10 +1631,23 @@ while ($true) {
     $path = ($requestLine -split ' ')[1]
     if (-not $path) { $path = '/' }
 
+    # Pick up an emulator that was replaced since the last request. Done here,
+    # once per request, so every path benefits: the frame needs the new window
+    # handle and touch needs the new console port.
+    $emuUp = Update-EmulatorTarget
+    if ($emuUp) { Ensure-Capturer }
+
     if ($path -like '/frame.jpg*') {
-      $jpeg = [EmuMirrorWin]::Capture($hwnd, $rescue, $Quality, $GSW, $GSH)
-      if ($jpeg) { Send-Bytes $stream '200 OK' 'image/jpeg' $jpeg }
-      else       { Send-Bytes $stream '503 Service Unavailable' 'text/plain' ([byte[]][char[]]'capture failed') }
+      if ($emuUp) {
+        $jpeg = [EmuMirrorWin]::Capture($script:EmuHwnd, $rescue, $Quality, $GSW, $GSH)
+        if ($jpeg) { Send-Bytes $stream '200 OK' 'image/jpeg' $jpeg }
+        else       { Send-Bytes $stream '503 Service Unavailable' 'text/plain' ([byte[]][char[]]'capture failed') }
+      }
+      else {
+        # No emulator: say so plainly rather than serving a broken image, and
+        # let the page show it instead of "reconnecting".
+        Send-Bytes $stream '503 Service Unavailable' 'text/plain' ([byte[]][char[]]'no emulator running')
+      }
     }
     elseif ($path -eq '/' -or $path -like '/index*' -or (($path -split '\?')[0]) -eq '/') {
           # The bare path is compared with any query string stripped: the extension

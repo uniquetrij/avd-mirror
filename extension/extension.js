@@ -338,7 +338,12 @@ class MirrorViewProvider {
         // relative endpoints are rewritten to absolute URLs below.
         const csp = [
           "default-src 'none'",
-          `connect-src ${base} http://${HOST}:8778`,
+          // 8777 is the mirror, 8778 the WGC capturer, 8779 the AVD manager.
+          // The AVD manager has to be listed or the page's AVD picker is
+          // blocked by CSP and reports "no manager" even though the manager
+          // is running - the browser tab has no CSP, which is why the same
+          // controls worked there and not in the panel.
+          `connect-src ${base} http://${HOST}:8778 http://${HOST}:8779`,
           `img-src ${base} data: blob: http://${HOST}:8778`,
           "style-src 'unsafe-inline'",
           "script-src 'unsafe-inline'",
