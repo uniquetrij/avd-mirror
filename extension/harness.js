@@ -70,13 +70,39 @@ const ext = require('./extension.js');
   console.log('has startAvd:', !!run('avdMirror.startAvd'));
   console.log('has stopAvd:', !!run('avdMirror.stopAvd'));
 
-  // Exercise a real select against the live manager.
-  const sel = run('avdMirror.selectAvd');
-  if (sel) {
-    await sel('ai_dating');
-    const st = calls.filter(c => c[0] === 'setStatusBarMessage').pop();
-    console.log('selectAvd ->', st ? st[1] : '(no status message)');
-  }
+  // Exercise EVERY registered command. The previous version only called
+  // selectAvd, which is why a misplaced vscode.* call in the stop path
+  // (vscode.withProgress instead of vscode.window.withProgress) went unnoticed
+  // until it was clicked in VS Code. A command that is never invoked is not
+  // tested, and the mock deliberately defines only vscode.window.withProgress,
+  // so calling vscode.withProgress throws exactly as it did in the extension
+  // host.
+  const failures = [];
+  const call = async (cmd, arg) => {
+    const fn = run(cmd);
+    if (!fn) { console.log(`  ${cmd}: NOT REGISTERED`); failures.push(`${cmd}: not registered`); return; }
+    try {
+      await fn(arg);
+      console.log(`  ${cmd}: ok`);
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      if (/is not a function/.test(msg)) {
+        console.log(`  ${cmd}: *** MISSING VS CODE API *** ${msg}`);
+        failures.push(`${cmd}: ${msg}`);
+      } else {
+        console.log(`  ${cmd}: threw ${msg}`);
+      }
+    }
+  };
+
+  console.log('exercising commands:');
+  await call('avdMirror.selectAvd', 'ai_dating');
+  await call('avdMirror.refreshAvds');
+  // The stop path is the one that was broken, so it is called for real.
+  await call('avdMirror.stopAvd');
+  await call('avdMirror.startAvd', 'ai_dating');
+  console.log('failures:', failures.length ? failures.join(' | ') : 'none');
+  if (failures.length) { console.log('HARNESS FAILED'); process.exit(1); }
 
   // Build a tree item through the provider to check the icon/description path.
   const prov = calls.find(c => c[0] === 'createTreeView');

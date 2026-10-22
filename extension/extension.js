@@ -570,7 +570,7 @@ async function stopAvd(force) {
   }
   // Graceful first; offer the forceful route if it does not come down, so the
   // user is never stuck with an emulator that will not exit.
-  await vscode.withProgress(
+  await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'AVD Mirror: stopping emulator' },
     async () => {
       const r = await avdCommand('/avd/stop?force=0');
