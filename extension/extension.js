@@ -600,7 +600,7 @@ async function startAvd(arg) {
   );
 }
 
-/** Stop the running AVD, asking whether to force it when a graceful stop is slow. */
+/** Stop the running AVD. Always asks how to stop unless force is already decided. */
 async function stopAvd(force) {
   const st = await avdState();
   if (!st || (!st.running && st.status !== 'starting')) {
@@ -612,12 +612,31 @@ async function stopAvd(force) {
     vscode.window.setStatusBarMessage('AVD Mirror: emulator stopped');
     return;
   }
-  // Graceful first; offer the forceful route if it does not come down, so the
-  // user is never stuck with an emulator that will not exit.
+  // Ask each time, with the graceful stop offered first. A force stop kills the
+  // emulator process outright and loses unsaved guest state, so it is never
+  // chosen silently - not even when the graceful stop has already failed.
+  const choice = await vscode.window.showQuickPick(
+    [
+      {
+        label: 'Stop gracefully',
+        description: 'Ask the emulator to shut down cleanly',
+        detail: 'The emulator saves its state and exits on its own.',
+      },
+      {
+        label: 'Force stop',
+        description: 'Kill the emulator process now',
+        detail: 'Unsaved guest state is lost.',
+      },
+    ],
+    { title: st.running ? `Stop "${st.running}"?` : 'Stop the emulator?', placeHolder: 'Choose how to stop' }
+  );
+  if (!choice) return;   // dismissed - do nothing
+
+  const isForce = choice.label === 'Force stop';
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'AVD Mirror: stopping emulator' },
     async () => {
-      const r = await avdCommand('/avd/stop?force=0');
+      const r = await avdCommand(`/avd/stop?force=${isForce ? 1 : 0}`);
       if (!r.ok && r.body.error) {
         const forceNow = await vscode.window.showWarningMessage(
           `AVD Mirror: ${r.body.error}`,
@@ -629,7 +648,9 @@ async function stopAvd(force) {
         }
         return;
       }
-      vscode.window.setStatusBarMessage('AVD Mirror: emulator stopped');
+      vscode.window.setStatusBarMessage(
+        isForce ? 'AVD Mirror: emulator force-stopped' : 'AVD Mirror: emulator stopped'
+      );
     }
   );
 }

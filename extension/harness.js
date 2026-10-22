@@ -33,6 +33,12 @@ const vscodeMock = {
     showInformationMessage: mk('showInformationMessage'),
     setStatusBarMessage: mk('setStatusBarMessage'),
     withProgress: async (opts, fn) => { calls.push(['withProgress', opts.title]); return fn(); },
+    showQuickPick: async (items, opts) => {
+      calls.push(['showQuickPick', opts && opts.title]);
+      // Default to the first (preferred) option, as a user accepting the default
+      // would, so the code path under test is the ordinary one.
+      return items[0];
+    },
     registerTreeDataProvider: () => ({ dispose() {} }),
   },
   commands: {
