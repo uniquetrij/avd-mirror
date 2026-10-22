@@ -508,8 +508,33 @@ class AvdTreeProvider {
   }
 }
 
+/**
+ * Work out which AVD a command should act on.
+ *
+ * The same command is reachable from three places and each hands over a
+ * different kind of argument:
+ *   - the view title bar  -> the TreeView object
+ *   - an item's context menu -> the tree item (an object with .name)
+ *   - the command palette -> nothing at all
+ *
+ * Passing the argument straight through meant the title bar's start button
+ * asked the manager to start an AVD literally named "[object Object]". Only a
+ * plain string is an AVD name; a tree item contributes its .name; anything else
+ * means "no AVD was named", which falls back to the selected one.
+ */
+function resolveAvdName(arg) {
+  if (typeof arg === 'string') return arg.trim();
+  if (arg && typeof arg === 'object' && typeof arg.name === 'string') return arg.name.trim();
+  return '';
+}
+
 /** Select an AVD, which is what the mirror starts next time. */
-async function selectAvd(name) {
+async function selectAvd(arg) {
+  const name = resolveAvdName(arg);
+  if (!name) {
+    vscode.window.showWarningMessage('AVD Mirror: no AVD to select.');
+    return;
+  }
   await startAvdManager();
   try {
     await fetch(`${AVD_URL}/avd/select?name=${encodeURIComponent(name)}`, { cache: 'no-store' });
@@ -521,8 +546,9 @@ async function selectAvd(name) {
 }
 
 /** Start an AVD and wait until the guest is actually up. */
-async function startAvd(name) {
-  const target = name || (await avdState() || {}).selected;
+async function startAvd(arg) {
+  const named = resolveAvdName(arg);
+  const target = named || (await avdState() || {}).selected;
   if (!target) {
     vscode.window.showWarningMessage('AVD Mirror: no AVD selected.');
     return;

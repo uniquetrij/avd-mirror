@@ -101,6 +101,58 @@ const ext = require('./extension.js');
   // The stop path is the one that was broken, so it is called for real.
   await call('avdMirror.stopAvd');
   await call('avdMirror.startAvd', 'ai_dating');
+
+  // Argument shapes. VS Code hands different things to the same command
+  // depending on where it was invoked from, and passing that straight through
+  // is how "start failed - unknown AVD '[object Object]'" happened:
+  //   view title bar     -> the TreeView
+  //   item context menu  -> the tree item
+  //   command palette    -> nothing
+  // Each must resolve to the right AVD (or fall back to the selected one)
+  // rather than to a stringified object.
+  console.log('argument shapes:');
+  const treeItem = { name: 'ai_dating', api: 'API 34', device: 'pixel_4' };
+  const treeView = { selection: [], onDidChangeSelection: () => ({ dispose() {} }) };
+  const shapes = [
+    ['tree item object', treeItem],
+    ['TreeView object', treeView],
+    ['plain string', 'ai_dating'],
+    ['undefined', undefined],
+  ];
+  for (const [label, arg] of shapes) {
+    const before = calls.filter(c => c[0] === 'showWarningMessage').length;
+    try {
+      await run('avdMirror.selectAvd')(arg);
+      const warned = calls.filter(c => c[0] === 'showWarningMessage').length > before;
+      console.log(`  selectAvd(${label}): ok${warned ? ' (warned - no name resolved)' : ''}`);
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      console.log(`  selectAvd(${label}): *** ${msg}`);
+      failures.push(`selectAvd(${label}): ${msg}`);
+    }
+  }
+  // The start path must not ask for "[object Object]" either. The emulator is
+  // already running, so this resolves to an already-running AVD rather than a
+  // full boot, but the name is what is being checked.
+  {
+    const before = calls.filter(c => c[0] === 'showErrorMessage').length;
+    try {
+      await run('avdMirror.startAvd')(treeView);
+      const errs = calls.filter(c => c[0] === 'showErrorMessage').slice(before);
+      const bad = errs.find(e => /\[object Object\]/.test(String(e[1])));
+      if (bad) {
+        console.log('  startAvd(TreeView): *** asked for "[object Object]" ***');
+        failures.push('startAvd(TreeView): resolved to [object Object]');
+      } else {
+        console.log('  startAvd(TreeView): ok (no [object Object])');
+      }
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      console.log(`  startAvd(TreeView): *** ${msg}`);
+      failures.push(`startAvd(TreeView): ${msg}`);
+    }
+  }
+
   console.log('failures:', failures.length ? failures.join(' | ') : 'none');
   if (failures.length) { console.log('HARNESS FAILED'); process.exit(1); }
 
