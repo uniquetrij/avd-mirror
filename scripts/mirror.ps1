@@ -1244,7 +1244,14 @@ $html = @'
           black bar); the plain declaration above is what a browser without
           color-mix falls back to. */
        background:color-mix(in srgb,var(--softkey) 60%,#000);
-       border:1px solid #30363d;border-bottom:0;z-index:0}
+       /* The three hairlines darken with the fill. They were picked against a
+          #161b22 chin; left at #30363d on a #0d1014 one they would read brighter
+          than they used to and the strip would look outlined rather than recessed.
+          Same 60% mix and the same fallback: a plain border colour first, so a
+          browser without color-mix keeps a visible edge instead of none. */
+       border:1px solid #30363d;border-bottom:0;
+       border-color:color-mix(in srgb,#30363d 60%,#000);
+       z-index:0}
   #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%);z-index:1;
    width:28px;height:28px;padding:0;
    display:flex;align-items:center;justify-content:center;

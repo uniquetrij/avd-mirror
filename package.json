@@ -2,7 +2,7 @@
     "name":  "avd-mirror",
     "displayName":  "AVD Mirror",
     "description":  "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
-    "version": "0.3.7",
+    "version": "0.3.8",
     "publisher":  "local",
     "license":  "MIT",
     "engines":  {
