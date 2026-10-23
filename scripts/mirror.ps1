@@ -1067,7 +1067,7 @@ Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Drawing
 $html = @'
 <!doctype html><html><head><meta charset="utf-8"><title>AVD Mirror</title>
 <style>
- html,body{margin:0;height:100%;background:#0d1117;color:#c9d1d9;font:12px system-ui,sans-serif;overflow:hidden}
+ html,body{margin:0;height:100%;background:var(--page);color:#c9d1d9;font:12px system-ui,sans-serif;overflow:hidden}
  /* #wrap is the containing block for the absolutely positioned soft-key bar, and
       carries the black that shows through wherever the screen is letterboxed.
       --barh is the soft-key bar's height, declared once and consumed by both the
@@ -1077,7 +1077,7 @@ $html = @'
        much, and every measurement that corrected the bar shifted it by 15.2 px
        again - so it alternated between sitting over the screen and hanging off
        the bottom, permanently. */
-   #wrap{display:flex;flex-direction:column;height:100%;position:relative;background:#000;--barh:38px}
+   #wrap{display:flex;flex-direction:column;height:100%;position:relative;background:var(--bezel);--barh:38px}
    /* #stage holds the image and the rotating #keylayer. The soft-key bar reserves
         room on whichever edge the current rotation puts it, applied as padding on
         #stage from JS (reserveForRotation). It is set from the rotation index, never
@@ -1097,6 +1097,18 @@ $html = @'
     screen reads as a rendering bug. The fallbacks keep a plain browser tab on
     the GitHub-dark palette this page started with. */
  :root{
+  /* Three surfaces can be detached from the page, so the same CSS serves a
+     plain browser tab (opaque, GitHub-dark) and the VS Code webview
+     (transparent, so the panel's own background shows through the letterbox
+     instead of a black box around the phone). The webview turns all three
+     transparent via `:root.embed` in the document it wraps this page in - see
+     MirrorViewProvider._html - and every rule below reads them, so there is no
+     second copy of the palette to keep in sync.
+       --page     the document behind the toolbar
+       --bezel    the letterbox, the screen field, and the blank "no emulator"
+                  state: everything that reads as the phone's surround
+       --softkey  the strip the three nav keys sit on */
+  --page:#0d1117;--bezel:#000;--softkey:#161b22;
   --tb-bg:var(--vscode-sideBar-background,#161b22);
   --tb-fg:var(--vscode-foreground,#c9d1d9);
   --tb-border:var(--vscode-panel-border,#30363d);
@@ -1116,7 +1128,7 @@ $html = @'
     strip already. */
  #barrow{display:flex;align-items:stretch;background:var(--tb-bg);border-bottom:1px solid var(--tb-border)}
  #bar{flex:1 1 auto;min-width:64px;padding:6px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
- #m{flex:1;min-height:0;object-fit:contain;background:#000;cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
+ #m{flex:1;min-height:0;object-fit:contain;background:var(--bezel);cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
  /* Status is a state *dot* plus text, and the text truncates instead of shoving
     the controls along. "reconnecting... (no emulator running)" is long enough to
     reflow the whole strip on its own, and it reflows again the moment it clears;
@@ -1157,7 +1169,7 @@ $html = @'
      the window would drift the keys off the guest's own nav positions. --imx/--imw
      carry the letterbox offset and displayed width, set by layoutNav(). */
   /* The bar is black, and the surface colour is painted only across the guest
-     screen via ::before. The image is object-fit:contain on a #000 field, so
+     screen via ::before. The image is object-fit:contain on the bezel field, so
      the side letterbox here matches the letterbox directly above it and the two
      read as one continuous black surround instead of a stripe butting into the
      panel. --imx/--imw come from layoutNav(), so the strip tracks the screen. */
@@ -1192,9 +1204,9 @@ $html = @'
        overlaps the guest display. Anchoring it with bottom:0 instead would put
        it *on* the screen's last --barh pixels, and the bar's top edge would
        read as 38 px above the screen bottom rather than flush with it. */
-        #navbar{position:absolute;left:0;right:0;top:100%;height:var(--barh);background:#000}
+        #navbar{position:absolute;left:0;right:0;top:100%;height:var(--barh);background:var(--bezel)}
       #navbar::before{content:'';position:absolute;top:0;bottom:0;left:0;right:0;
-       background:#161b22;border-top:1px solid #30363d;z-index:0}
+       background:var(--softkey);border-top:1px solid #30363d;z-index:0}
   #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%);z-index:1;
    width:28px;height:28px;padding:0;
    display:flex;align-items:center;justify-content:center;
@@ -1313,7 +1325,7 @@ $html = @'
      blank rather than showing a stale frame, and the on-screen keys are hidden
      with it - they would otherwise float over an empty area. */
   #noemu{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;
-   background:#000;padding:1.5rem;text-align:center}
+   background:var(--bezel);padding:1.5rem;text-align:center}
   #noemu[hidden]{display:none}
   .noemu-box{max-width:34rem}
   .noemu-title{color:#d29922;font-size:15px;font-weight:600;margin-bottom:.45em}
