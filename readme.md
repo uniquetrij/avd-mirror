@@ -47,12 +47,18 @@ installed VSIX.
 
 ## Use
 
-1. Click the **AVD Mirror** icon in the Activity Bar (left side).
-2. The panel opens and the extension starts `mirror.ps1` on port 8777 if it is
-   not already running; the frame appears as soon as the server answers.
-3. Command Palette (`Ctrl+Shift+P`) → `AVD Mirror:` for Open Panel / Start /
-   Stop / Restart / Reload. The **AVDs** view lists every AVD with its state,
-   and can start or stop them.
+1. Open the **AVD Mirror** panel: Command Palette (`Ctrl+Shift+P`) →
+   `AVD Mirror: Open Panel`, or pick **AVD Mirror** from the Panel's `...` menu
+   at the bottom of the window (`View → Appearance → Panel`).
+2. The panel has two horizontal tabs, **Screen** and **AVDs**. Screen starts
+   `mirror.ps1` on port 8777 if it is not already running; the frame appears as
+   soon as the server answers. **AVDs** lists every AVD with its state and can
+   start or stop them.
+3. Full height is one click away — the `⤢` action in the Screen tab's title bar,
+   or `AVD Mirror: Open Full Screen (Editor Tab)`, opens the same mirror as an
+   editor tab.
+4. Command Palette → `AVD Mirror:` for Open Panel / Start / Stop / Restart /
+   Reload.
 
 Server logs go to the **AVD Mirror** output channel.
 

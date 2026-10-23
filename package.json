@@ -18,24 +18,26 @@
                          ],
     "contributes":  {
                         "viewsContainers":  {
-                                                "activitybar":  [
-                                                                    {
-                                                                        "id":  "avdMirror",
-                                                                        "title":  "AVD Mirror",
-                                                                        "icon":  "media/icon.svg"
-                                                                    }
-                                                                ]
+                                                "panel":  [
+                                                              {
+                                                                  "id":  "avdMirror",
+                                                                  "title":  "AVD Mirror",
+                                                                  "icon":  "media/icon.svg"
+                                                              }
+                                                          ]
                                             },
                         "commands":  [
                                          {
                                              "command":  "avdMirror.open",
                                              "title":  "Open Panel",
-                                             "category":  "AVD Mirror"
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(screen-full)"
                                          },
                                          {
                                              "command":  "avdMirror.openInEditor",
                                              "title":  "Open Full Screen (Editor Tab)",
-                                             "category":  "AVD Mirror"
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(screen-full)"
                                          },
                                          {
                                              "command":  "avdMirror.start",
@@ -94,18 +96,23 @@
                         "views":  {
                                       "avdMirror":  [
                                                         {
-                                                            "id":  "avdMirror.avds",
-                                                            "name":  "AVDs"
-                                                        },
-                                                        {
                                                             "id":  "avdMirror.view",
                                                             "name":  "Screen",
                                                             "type":  "webview"
+                                                        },
+                                                        {
+                                                            "id":  "avdMirror.avds",
+                                                            "name":  "AVDs"
                                                         }
                                                     ]
                                   },
                         "menus":  {
                                       "view/title":  [
+                                                         {
+                                                             "command":  "avdMirror.openInEditor",
+                                                             "when":  "view == avdMirror.view",
+                                                             "group":  "navigation@1"
+                                                         },
                                                          {
                                                              "command":  "avdMirror.startAvd",
                                                              "when":  "view == avdMirror.avds",
