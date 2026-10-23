@@ -757,6 +757,8 @@ class AvdTreeProvider {
   }
 
   async getChildren() {
+    // Rendering the tree is also the signal that it is on screen.
+    this.start();
     if (!this._state) await this.poll();
     const st = this._state || {};
     const items = (st.avds || []).map(a => ({ name: a.name, api: a.api, device: a.device }));
@@ -932,18 +934,37 @@ async function toggleHide() {
 }
 
 function activate(context) {
-  // Activation is onView, i.e. the user just opened the panel or the AVD list.
-  // On the wrong OS explain that once and let everything below register inertly,
-  // so no command reports the more confusing "command 'avdMirror.open' not found".
-  if (unsupportedPlatform()) warnUnsupportedPlatform();
-  else ensureDotnetRuntime().catch(e => output.appendLine(`dotnet check: ${e && e.message ? e.message : e}`));
+  // Activation is also onStartupFinished, so that the status bar entry point
+  // exists before the panel has ever been opened - it replaces the Activity Bar
+  // icon a Panel container does not get. Nothing that spawns a process may run
+  // here: the servers start when a view is actually shown, and the platform and
+  // .NET warnings fire from paint()/startServer() when the user asks for them,
+  // not on every window that happens to open.
   const provider = new MirrorViewProvider();
   const avdTree = new AvdTreeProvider();
   avdTreeRef = avdTree;
-  // The AVD list has to be live: an emulator started or stopped from the
-  // mirror page's own toolbar must show up here without a reload.
-  avdTree.start();
   context.subscriptions.push({ dispose: () => avdTree.stop() });
+
+  // The status bar entry point. A Panel container gets no Activity Bar icon, so
+  // without this the only way back to the mirror once the panel is closed is the
+  // Command Palette, which is not somewhere a running tool should live.
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  status.text = '$(device-mobile) AVD Mirror';
+  status.tooltip = 'Open the AVD Mirror panel';
+  status.command = 'avdMirror.open';
+  status.show();
+
+  // The AVD list has to be live while it is on screen - an emulator started or
+  // stopped from the mirror page's own toolbar must show up here without a
+  // reload - but activation happens at startup now, so polling follows the
+  // tree's visibility instead of starting with the extension: it is what spawns
+  // the manager on 8779. getChildren() starts it too, because the initial
+  // visibility of an already-open tab does not fire a change event.
+  const treeView = vscode.window.createTreeView('avdMirror.avds', { treeDataProvider: avdTree });
+  context.subscriptions.push(
+    treeView,
+    treeView.onDidChangeVisibility(e => { if (e.visible) avdTree.start(); else avdTree.stop(); })
+  );
     // A supervision failure must never escape into a view provider or panel:
     // that is what produces "An error occurred while loading view".
     // Must return the promise, for the same reason as in resolveWebviewView.
@@ -966,8 +987,8 @@ function activate(context) {
     };
 
     context.subscriptions.push(
+      status,
       vscode.window.registerWebviewViewProvider('avdMirror.view', provider),
-      vscode.window.createTreeView('avdMirror.avds', { treeDataProvider: avdTree }),
       vscode.commands.registerCommand('avdMirror.selectAvd', (name) => selectAvd(name)),
       vscode.commands.registerCommand('avdMirror.startAvd', (name) => startAvd(name)),
       vscode.commands.registerCommand('avdMirror.stopAvd', () => stopAvd(false)),

@@ -14,7 +14,8 @@
     "main":  "./extension.js",
     "activationEvents":  [
                              "onView:avdMirror.view",
-                             "onView:avdMirror.avds"
+                             "onView:avdMirror.avds",
+                             "onStartupFinished"
                          ],
     "contributes":  {
                         "viewsContainers":  {

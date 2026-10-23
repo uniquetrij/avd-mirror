@@ -23,10 +23,18 @@ const vscodeMock = {
   TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
   ProgressLocation: { Notification: 15, Window: 10 },
   ViewColumn: { Active: -1 },
+  StatusBarAlignment: { Left: 1, Right: 2 },
   window: {
     createOutputChannel: () => ({ appendLine: mk('appendLine'), append: mk('append'), dispose() {} }),
+    createStatusBarItem: (align, prio) => {
+      calls.push(['createStatusBarItem', align, prio]);
+      return { text: '', tooltip: '', command: '', show() {}, hide() {}, dispose() {} };
+    },
     registerWebviewViewProvider: () => ({ dispose() {} }),
-    createTreeView: (id, opts) => { calls.push(['createTreeView', id, opts.treeDataProvider]); return { dispose() {} }; },
+    createTreeView: (id, opts) => {
+      calls.push(['createTreeView', id, opts.treeDataProvider]);
+      return { dispose() {}, onDidChangeVisibility: () => ({ dispose() {} }) };
+    },
     createWebviewPanel: () => ({ webview: {}, onDidDispose: () => ({ dispose() {} }), reveal() {}, dispose() {} }),
     showErrorMessage: mk('showErrorMessage'),
     showWarningMessage: mk('showWarningMessage'),

@@ -47,9 +47,10 @@ installed VSIX.
 
 ## Use
 
-1. Open the **AVD Mirror** panel: Command Palette (`Ctrl+Shift+P`) →
-   `AVD Mirror: Open Panel`, or pick **AVD Mirror** from the Panel's `...` menu
-   at the bottom of the window (`View → Appearance → Panel`).
+1. Open the **AVD Mirror** panel: click **$(device-mobile) AVD Mirror** in the
+   status bar, run `AVD Mirror: Open Panel` from the Command Palette
+   (`Ctrl+Shift+P`), or pick **AVD Mirror** from the Panel's `...` menu at the
+   bottom of the window.
 2. The panel has two horizontal tabs, **Screen** and **AVDs**. Screen starts
    `mirror.ps1` on port 8777 if it is not already running; the frame appears as
    soon as the server answers. **AVDs** lists every AVD with its state and can
