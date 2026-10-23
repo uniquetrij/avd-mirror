@@ -81,9 +81,24 @@ function Set-Selected {
 }
 
 # --- adb --------------------------------------------------------------------
+# adb and emulator.exe write routine chatter to stderr ("* daemon not running;
+# starting now at tcp:5037", "INFO | ...", "error: no devices/emulators found").
+# Under $ErrorActionPreference = 'Stop', a native command's stderr captured with
+# 2>&1 becomes a *terminating* NativeCommandError, so the first such line threw:
+# the request handler's catch swallowed it and closed the connection with no
+# reply at all, which blanked the AVDs tree. Run every external tool through
+# this and its stderr is just text.
+function Invoke-Native {
+  param([scriptblock]$Command)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { & $Command 2>&1 | ForEach-Object { [string]$_ } }
+  finally { $ErrorActionPreference = $prev }
+}
+
 function Invoke-Adb {
   param([string[]]$Arguments)
-  & $adbExe @Arguments 2>&1
+  Invoke-Native { & $adbExe @Arguments }
 }
 
 # --- inventory --------------------------------------------------------------
@@ -99,7 +114,7 @@ function Get-AvdNames {
   }
   $names = @()
   if (Test-Path $emulatorExe) {
-    foreach ($line in (& $emulatorExe '-list-avds' 2>&1)) {
+    foreach ($line in (Invoke-Native { & $emulatorExe '-list-avds' })) {
       $t = ($line -as [string]).Trim()
       if ($t) { $names += $t }
     }

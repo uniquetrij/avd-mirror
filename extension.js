@@ -154,13 +154,25 @@ function stopAvdManager() {
   catch (e) { output.appendLine(`AVD manager stop failed: ${e}`); }
 }
 
+/**
+ * Why the last inventory read failed, so an empty tree can say so.
+ *
+ * This used to return null on any problem, and the tree rendered as a plain
+ * empty list: a manager that was up but answering nothing looked identical to a
+ * machine with no AVDs at all.
+ */
+let avdStateError = '';
+
 /** Read the AVD inventory from the manager. */
 async function avdState() {
   try {
     const res = await fetch(`${AVD_URL}/avds`, { cache: 'no-store' });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
+    if (!res.ok) { avdStateError = `manager replied HTTP ${res.status}`; return null; }
+    const st = await res.json();
+    avdStateError = '';
+    return st;
+  } catch (e) {
+    avdStateError = e && e.message ? e.message : String(e);
     return null;
   }
 }
@@ -455,6 +467,11 @@ class MirrorViewProvider {
 }
 
 // --- AVD tree view -----------------------------------------------------------
+// A row that reports why the tree is empty, instead of an empty tree.
+class ErrorItem {
+  constructor(message) { this.message = message; }
+}
+
 // One row per AVD, showing which one is running and which is selected. The
 // list is re-read from the manager rather than cached, so an AVD created or
 // deleted elsewhere appears without a reload.
@@ -463,6 +480,7 @@ class AvdTreeProvider {
     this._onDidChangeTreeData = new vscode.EventEmitter();
     this.onDidChangeTreeData = this._onDidChangeTreeData.event;
     this._state = null;
+    this._error = '';
     this._timer = null;
   }
 
@@ -475,6 +493,15 @@ class AvdTreeProvider {
     const st = await avdState();
     if (st) {
       this._state = st;
+      this._error = '';
+      this.refresh();
+      return;
+    }
+    // Log each distinct failure once, not every 3 s.
+    const error = avdStateError || 'no response';
+    if (this._error !== error) {
+      this._error = error;
+      output.appendLine(`AVD list unavailable: ${error}`);
       this.refresh();
     }
   }
@@ -490,6 +517,13 @@ class AvdTreeProvider {
   }
 
   getTreeItem(el) {
+    if (el instanceof ErrorItem) {
+      const bad = new vscode.TreeItem(el.message, vscode.TreeItemCollapsibleState.None);
+      bad.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('problemsWarningIcon.foreground'));
+      bad.tooltip = 'The AVD manager is not answering. See the AVD Mirror output channel.';
+      bad.contextValue = 'avdError';
+      return bad;
+    }
     const st = this._state || {};
     const running = st.running === el.name;
     const selected = st.selected === el.name;
@@ -522,7 +556,11 @@ class AvdTreeProvider {
   async getChildren() {
     if (!this._state) await this.poll();
     const st = this._state || {};
-    return (st.avds || []).map(a => ({ name: a.name, api: a.api, device: a.device }));
+    const items = (st.avds || []).map(a => ({ name: a.name, api: a.api, device: a.device }));
+    // An empty list has to say why it is empty: "no AVDs" and "manager not
+    // answering" looked the same, and the second one is a bug to report.
+    if (!items.length) return [new ErrorItem(this._error || 'No AVDs found')];
+    return items;
   }
 }
 

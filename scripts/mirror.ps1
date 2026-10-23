@@ -60,7 +60,7 @@ function Start-AvdAndWait {
   # no longer be a handle. Write-Host goes to the host and leaves the pipeline
   # clean.
   Write-Host "no emulator running - starting AVD '$AvdName'"
-  $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $avdScript -Command start -Name $AvdName 2>&1
+  $out = Invoke-Native { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $avdScript -Command start -Name $AvdName }
   foreach ($line in $out) { Write-Host "  avd.ps1: $line" }
 
   $began = [datetime]::UtcNow
@@ -115,9 +115,23 @@ $script:EmuLost = $false
 $adbExe = Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe'
 if (-not (Test-Path $adbExe)) { $adbExe = 'adb' }
 
+# adb writes routine chatter to stderr ("* daemon not running; starting now at
+# tcp:5037", "error: no devices/emulators found"). Under $ErrorActionPreference =
+# 'Stop', a native command's stderr captured with 2>&1 becomes a *terminating*
+# NativeCommandError, so the first such line threw and that reply (guest size, a
+# nav key, a tap) was lost. Run every external tool through this and its stderr
+# is just text.
+function Invoke-Native {
+  param([scriptblock]$Command)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { & $Command 2>&1 | ForEach-Object { [string]$_ } }
+  finally { $ErrorActionPreference = $prev }
+}
+
 function Invoke-Adb {
   param([string[]]$Arguments)
-  & $adbExe @Arguments 2>&1
+  Invoke-Native { & $adbExe @Arguments }
 }
 
 # The *rotated* guest size, which is what the page needs to map its pixels onto
