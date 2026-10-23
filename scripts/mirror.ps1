@@ -1131,6 +1131,22 @@ $html = @'
  #barrow{display:flex;align-items:stretch;background:var(--tb-bg);border-bottom:1px solid var(--tb-border)}
  #bar{flex:1 1 auto;min-width:64px;padding:6px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
  #m{flex:1;min-height:0;object-fit:contain;background:var(--bezel);cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
+ /* The captured frame is not a clean rectangle: the emulator's device skin
+    rounds the display's bottom two corners, so a light arc sits *inside* the
+    frame at each of them and the screen reads as rounded where it should be a
+    hard edge - most obvious now that the soft-key bar's hairlines run up to it.
+    CSS can hide pixels but never add them, so each bottom corner is covered by a
+    canvas holding the frame's own content from just above the arc (see
+    patchCorners). Copying real pixels keeps the patch invisible whatever the
+    guest paints there; a guessed flat colour would show as a dot the moment the
+    bottom of the screen is not uniformly dark.
+    Positioned from the displayed rect (--imx/--imw/--imy/--imh, set by
+    layoutNav) rather than the stage box, so the patches follow the screen when
+    the letterbox moves, and pointer-events:none keeps every tap and drag going
+    to #m underneath. --sqpx must stay larger than the arc (about 6 frame px). */
+ .sqcorner{--sqpx:12px;position:absolute;width:var(--sqpx);height:var(--sqpx);pointer-events:none}
+ #sqL{left:var(--imx);top:calc(var(--imy) + var(--imh) - var(--sqpx))}
+ #sqR{left:calc(var(--imx) + var(--imw) - var(--sqpx));top:calc(var(--imy) + var(--imh) - var(--sqpx))}
  /* Status is a state *dot* plus text, and the text truncates instead of shoving
     the controls along. "reconnecting... (no emulator running)" is long enough to
     reflow the whole strip on its own, and it reflows again the moment it clears;
@@ -1421,6 +1437,9 @@ $html = @'
        content it was describing. The `alt` text still names the image for
        assistive technology. -->
   <img id="m" alt="emulator screen"/>
+     <!-- Square the display's bottom corners; see .sqcorner. -->
+     <canvas id="sqL" class="sqcorner" aria-hidden="true"></canvas>
+     <canvas id="sqR" class="sqcorner" aria-hidden="true"></canvas>
      <!-- Shown instead of the screen while no emulator is running. The last frame
           is cleared, because a stale screen invites the reader to believe the
           emulator is still up. -->
@@ -1444,6 +1463,7 @@ const img=document.getElementById('m'),st=document.getElementById('st'),
       fps=document.getElementById('fps'),dim=document.getElementById('dim'),
       srcEl=document.getElementById('src'),navbar=document.getElementById('navbar'),
       stage=document.getElementById('stage'),kl=document.getElementById('keylayer'),
+      sqL=document.getElementById('sqL'),sqR=document.getElementById('sqR'),
       noemuEl=document.getElementById('noemu'),statusEl=document.getElementById('status');
 
 // One place sets the status line, so the dot and the text can never disagree.
@@ -1466,6 +1486,7 @@ function showNoEmulator(on){
     if(prev){ URL.revokeObjectURL(prev); prev=null; }
     img.removeAttribute('src');
     dim.textContent='';
+  patchCorners();          // the corner patches held pixels from that frame
   }
 }
 // WGC (wgccap :8778) captures via Windows.Graphics.Capture - full rate even when
@@ -1638,6 +1659,37 @@ function reserveForRotation(){
   stage.style[side]=bh+'px';
 }
 
+// The emulator's device skin rounds the display's bottom two corners, and the
+// capture carries that arc with it: a light curve at each bottom corner of a
+// screen that is otherwise a hard-edged rectangle. CSS cannot add pixels back,
+// so each corner is covered with the frame's *own* content taken from one patch
+// height above the arc. Copying real pixels is what makes the patch invisible -
+// a flat colour guessed from the frame would show as a dot the moment the bottom
+// of the screen is not uniformly dark.
+//
+// The frame is drawn at its displayed size times devicePixelRatio, so a source
+// position in CSS px becomes -position*dpr in canvas px and the patch is 1:1
+// with what #m paints underneath it. The size comes from the stylesheet, so one
+// number (--sqpx) governs both the box and the sampling.
+function patchCorners(){
+  const iw=img.naturalWidth, ih=img.naturalHeight;
+  const dpr=window.devicePixelRatio||1;
+  const dw=parseFloat(stage.style.getPropertyValue('--imw'))||0;
+  const dh=parseFloat(stage.style.getPropertyValue('--imh'))||0;
+  for(const [cv,right] of [[sqL,0],[sqR,1]]){
+    const sq=cv.getBoundingClientRect().width;    // --sqpx, in CSS px
+    if(sq<1) continue;
+    const px=Math.round(sq*dpr);
+    if(cv.width!==px){ cv.width=px; cv.height=px; }
+    const g=cv.getContext('2d');
+    g.clearRect(0,0,px,px);
+    if(!iw||!dw||!dh) continue;                   // no frame: leave the corner empty
+    const x=(right?dw-2*sq:sq)*dpr;               // one patch width inwards from that edge
+    const y=(dh-2*sq)*dpr;                        // one patch height above the bottom edge
+    g.drawImage(img,-x,-y,dw*dpr,dh*dpr);
+  }
+}
+
 function layoutNav(){
     const r=img.getBoundingClientRect();
     const iw=img.naturalWidth||GW, ih=img.naturalHeight||GH;
@@ -1666,6 +1718,7 @@ function layoutNav(){
     // compact layout. Measure it rather than hard-coding a gap.
     const bh=document.getElementById('bar').getBoundingClientRect().height;
     if(bh>0) document.getElementById('wrap').style.setProperty('--barpop',(bh+6)+'px');
+    patchCorners();      // the patch source offset depends on the displayed scale
     }
 
 // The first poll waits for the server's view of the capturer. A refused
