@@ -1170,12 +1170,21 @@ $html = @'
      whenever there are side letterboxes the two widths differ and anchoring to
      the window would drift the keys off the guest's own nav positions. --imx/--imw
      carry the letterbox offset and displayed width, set by layoutNav(). */
-  /* The bar itself is transparent and the strip colour is painted only across
-     the guest screen via ::before. The image is object-fit:contain on the
-     transparent bezel field, so the side letterbox here matches the letterbox
-     directly above it and the two read as one continuous surface instead of a
-     stripe butting into the panel. --imx/--imw come from layoutNav(), so the
-     strip tracks the screen. */
+  /* The bar itself is transparent and the strip colour is painted by ::before.
+     #keylayer is sized to the *displayed guest screen*, so this bar's box is
+     already exactly as wide as the screen and ::before needs no --imx/--imw:
+     left:0/right:0 spans the screen, not the window. (An earlier version of this
+     comment claimed the strip was positioned from those vars; it never was.)
+
+     That width is why the strip needs its own outline. Now that the letterbox is
+     transparent and the strip is --tb-bg, the two are the same colour, so the bar
+     reads as spanning the whole panel instead of belonging to the phone. The
+     left/right hairlines mark the screen's edges, which are also the bar's ends,
+     and together with border-top they close the bar into a U under the screen.
+     box-sizing keeps the hairlines inside the screen width - with content-box the
+     box grew 2 px wider than the screen it is supposed to sit under. In landscape
+     the layer's rotation carries these two lines onto the screen's top and bottom
+     physical edges, which is right: those are the edges the bar runs along. */
   /* The bar's top edge is pinned to the bottom of the displayed guest screen via
        `top`, set by layoutNav(). It used to sit in normal flow below the stage, so
        its top edge was the *stage's* bottom edge - which only coincided with the
@@ -1208,8 +1217,8 @@ $html = @'
        it *on* the screen's last --barh pixels, and the bar's top edge would
        read as 38 px above the screen bottom rather than flush with it. */
         #navbar{position:absolute;left:0;right:0;top:100%;height:var(--barh);background:var(--bezel)}
-      #navbar::before{content:'';position:absolute;top:0;bottom:0;left:0;right:0;
-       background:var(--softkey);border-top:1px solid #30363d;z-index:0}
+      #navbar::before{content:'';position:absolute;top:0;bottom:0;left:0;right:0;box-sizing:border-box;
+       background:var(--softkey);border:1px solid #30363d;border-bottom:0;z-index:0}
   #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%);z-index:1;
    width:28px;height:28px;padding:0;
    display:flex;align-items:center;justify-content:center;
