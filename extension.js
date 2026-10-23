@@ -91,8 +91,56 @@ async function isUp() {
   }
 }
 
+// --- platform guard ----------------------------------------------------------
+// Everything below is Windows-only: mirror.ps1 calls PrintWindow, ITaskbarList
+// and SetWindowPos, and src/wgccap uses Windows Graphics Capture. package.json
+// has no field that stops an extension loading on a given OS, so the check has
+// to happen at activation - otherwise the servers spawn `pwsh` against scripts
+// that call Win32 APIs and the panel dies with no explanation at all.
+const WINDOWS_ONLY_HELP =
+  'AVD Mirror needs Windows 10 (build 19041 or newer): it captures the emulator ' +
+  'window with Windows Graphics Capture and moves that window with Win32 APIs.';
+
+function unsupportedPlatform() {
+  return process.platform !== 'win32';
+}
+
+let platformReported = false;
+
+/** Say once per session why nothing here can work, instead of failing silently. */
+function warnUnsupportedPlatform() {
+  output.appendLine(
+    `unsupported platform "${process.platform}" (${process.arch}); ${WINDOWS_ONLY_HELP}`
+  );
+  if (platformReported) return;
+  platformReported = true;
+  vscode.window.showErrorMessage(`AVD Mirror: ${WINDOWS_ONLY_HELP}`);
+}
+
 function psExe() {
+  // Windows PowerShell ships with Windows. The pwsh branch is only a developer
+  // fallback: activation is gated by unsupportedPlatform(), so it is unreachable.
   return process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
+}
+
+/**
+ * Log a child's output, and turn a spawn failure into one readable message.
+ *
+ * A missing executable arrives as an 'error' event, not an exit code: without a
+ * listener here it is thrown out of the extension host and takes the whole
+ * extension down. It used to reach the user as nothing but a dead panel.
+ */
+function wireProc(proc, label) {
+  proc.stdout.on('data', d => output.append(d.toString().trimEnd()));
+  proc.stderr.on('data', d => output.append(d.toString().trimEnd()));
+  proc.on('error', e => {
+    const why = e && e.code === 'ENOENT'
+      ? `${psExe()} not found on PATH - AVD Mirror drives the Windows PowerShell that ships with Windows`
+      : (e && e.message ? e.message : String(e));
+    output.appendLine(`${label} failed to start: ${why}`);
+    vscode.window.showErrorMessage(`AVD Mirror: ${label} could not start - ${why}.`);
+  });
+  return proc;
 }
 
 // --- AVD manager -------------------------------------------------------------
@@ -112,6 +160,7 @@ async function avdManagerUp() {
 }
 
 async function startAvdManager() {
+  if (unsupportedPlatform()) return false;
   if (await avdManagerUp()) return true;
   const script = findAvdScript();
   if (!script) {
@@ -125,11 +174,11 @@ async function startAvdManager() {
        '-File', script, '-Port', String(AVD_PORT)],
       { detached: false, windowsHide: true }
     );
-    avdProc.stdout.on('data', d => output.append(d.toString().trimEnd()));
-    avdProc.stderr.on('data', d => output.append(d.toString().trimEnd()));
-    avdProc.on('exit', code => {
+    const proc = avdProc;
+    wireProc(proc, 'AVD manager');
+    proc.on('exit', code => {
       output.appendLine(`AVD manager exited (${code})`);
-      avdProc = null;
+      if (avdProc === proc) avdProc = null;
     });
     for (let tries = 0; tries < 30; tries++) {
       await new Promise(r => setTimeout(r, 200));
@@ -188,8 +237,98 @@ async function avdCommand(path) {
   }
 }
 
+// --- .NET runtime guard ------------------------------------------------------
+// src/wgccap is built framework-dependent for net8.0-windows, so the .NET 8
+// runtime has to exist on the machine. Without it the apphost exits immediately,
+// the page silently drops to the PrintWindow fallback - slower, and prone to the
+// colour-channel tint described in SKILL.md - and nothing anywhere said why.
+const DOTNET_DOWNLOAD = 'https://dotnet.microsoft.com/download/dotnet/8.0';
+const DOTNET_WINGET = 'winget install Microsoft.DotNet.Runtime.8';
+
+// null until probed, then 'ok' | 'missing' | 'unknown'.
+let dotnetState = null;
+let dotnetReported = false;
+
+/** Run a command and resolve its combined output, or null if it would not run. */
+function runCapture(exe, args, timeoutMs) {
+  return new Promise(resolve => {
+    let settled = false;
+    const done = value => { if (!settled) { settled = true; resolve(value); } };
+    let proc;
+    try {
+      proc = spawn(exe, args, { windowsHide: true });
+    } catch {
+      done(null);
+      return;
+    }
+    let text = '';
+    proc.stdout.on('data', d => { text += d.toString(); });
+    proc.stderr.on('data', d => { text += d.toString(); });
+    proc.on('error', () => done(null));
+    proc.on('exit', code => done(code === 0 ? text : null));
+    setTimeout(() => {
+      try { proc.kill(); } catch { /* already gone */ }
+      done(text || null);
+    }, timeoutMs);
+  });
+}
+
+/** Is a .NET 8 runtime installed? Cached - the answer cannot change mid-session. */
+async function dotnetRuntime() {
+  if (dotnetState) return dotnetState;
+  // `dotnet` is not always on PATH: the user-local install that winget and the
+  // VS Code build task use lives under %LOCALAPPDATA%\Microsoft\dotnet.
+  const candidates = ['dotnet'];
+  if (process.env.ProgramFiles) {
+    candidates.push(path.join(process.env.ProgramFiles, 'dotnet', 'dotnet.exe'));
+  }
+  if (process.env.LOCALAPPDATA) {
+    candidates.push(path.join(process.env.LOCALAPPDATA, 'Microsoft', 'dotnet', 'dotnet.exe'));
+  }
+  let listing = '';
+  for (const exe of candidates) {
+    const text = await runCapture(exe, ['--list-runtimes'], 8000);
+    if (text) { listing = text; break; }
+  }
+  if (!listing) {
+    // No answer is not evidence of absence: stay quiet rather than tell the user
+    // to install something that may already be there.
+    dotnetState = 'unknown';
+    output.appendLine(
+      'dotnet: could not run "dotnet --list-runtimes" - cannot tell whether the .NET 8 runtime is installed'
+    );
+    return dotnetState;
+  }
+  // 8.x specifically: the host does not roll forward across a major version.
+  const ok = /Microsoft\.(NETCore|WindowsDesktop)\.App 8\./.test(listing);
+  dotnetState = ok ? 'ok' : 'missing';
+  output.appendLine(ok
+    ? 'dotnet: .NET 8 runtime found'
+    : `dotnet: no .NET 8 runtime (found: ${listing.replace(/\r?\n/g, ', ').trim() || 'nothing'})`);
+  return dotnetState;
+}
+
+/** Warn once if the fast capturer cannot run, naming the fix, not the symptom. */
+async function ensureDotnetRuntime() {
+  if (await dotnetRuntime() !== 'missing' || dotnetReported) return;
+  dotnetReported = true;
+  const pick = await vscode.window.showWarningMessage(
+    'AVD Mirror: the .NET 8 runtime is not installed, so the full-rate capturer ' +
+    '(wgccap) cannot start. The mirror falls back to PrintWindow - slower, and it ' +
+    'can tint colours.',
+    'Get .NET 8', 'Copy install command'
+  );
+  if (pick === 'Get .NET 8') {
+    await vscode.env.openExternal(vscode.Uri.parse(DOTNET_DOWNLOAD));
+  } else if (pick === 'Copy install command') {
+    await vscode.env.clipboard.writeText(DOTNET_WINGET);
+    vscode.window.setStatusBarMessage(`AVD Mirror: copied "${DOTNET_WINGET}"`, 4000);
+  }
+}
+
 async function startServer() {
   if (starting) return;
+  if (unsupportedPlatform()) { warnUnsupportedPlatform(); return; }
   if (await isUp()) {
     output.appendLine('mirror server already listening');
     return;
@@ -208,6 +347,11 @@ async function startServer() {
     // The AVD manager comes up first: the mirror may need it to start the
     // selected AVD when nothing is running yet.
     await startAvdManager();
+    // Fire and forget: the capturer check must not delay the server, and the
+    // probe caches its answer so repeated starts cost nothing.
+    ensureDotnetRuntime().catch(e =>
+      output.appendLine(`dotnet check: ${e && e.message ? e.message : e}`)
+    );
     output.appendLine(`starting: ${script} -Port ${PORT}`);
     // Hidden, like the documented manual launch, so the mirror never steals
     // focus or opens a console window over the editor.
@@ -217,11 +361,22 @@ async function startServer() {
        '-File', script, '-Port', String(PORT)],
       { detached: false, windowsHide: true }
     );
-    serverProc.stdout.on('data', d => output.append(d.toString().trimEnd()));
-    serverProc.stderr.on('data', d => output.append(d.toString().trimEnd()));
-    serverProc.on('exit', code => {
+    const proc = serverProc;
+    let exitCode = null;
+    wireProc(proc, 'mirror server');
+    proc.on('exit', code => {
+      exitCode = code;
       output.appendLine(`mirror server exited (${code})`);
-      serverProc = null;
+      if (code !== 0) {
+        // -ExecutionPolicy Bypass in the command line covers every local scope,
+        // but not a machine or user policy set by Group Policy - the usual reason
+        // the same command works by hand and fails from here.
+        output.appendLine(
+          'if that repeats, check "Get-ExecutionPolicy -List": a MachinePolicy or ' +
+          'UserPolicy scope cannot be overridden by -ExecutionPolicy Bypass'
+        );
+      }
+      if (serverProc === proc) serverProc = null;
     });
 
     // Poll for readiness so we can refresh the panel the moment frames exist,
@@ -234,8 +389,11 @@ async function startServer() {
               return;
             }
     }
-    output.appendLine('mirror server did not come up; see output');
-    vscode.window.showWarningMessage('AVD Mirror server did not start - see the AVD Mirror output channel.');
+    const why = exitCode === null ? '' : ` (PowerShell exited with code ${exitCode})`;
+    output.appendLine(`mirror server did not come up${why}; see output`);
+    vscode.window.showWarningMessage(
+      `AVD Mirror server did not start${why} - see the AVD Mirror output channel.`
+    );
   } catch (e) {
     output.appendLine(`start failed: ${e && e.stack ? e.stack : e}`);
     vscode.window.showErrorMessage(`AVD Mirror: failed to start - ${e && e.message ? e.message : e}`);
@@ -292,6 +450,13 @@ class MirrorViewProvider {
 
   /** Set HTML on a webview once the page is available, else show the hint. */
   async paint(target) {
+    // Nothing to fetch on a platform that cannot serve it: show the reason rather
+    // than leaving "Loading the mirror from port 8777..." up forever.
+    if (unsupportedPlatform()) {
+      warnUnsupportedPlatform();
+      target.webview.html = MirrorViewProvider.platformHtml();
+      return;
+    }
     try {
         // Always re-fetch. The page embeds the mirror's CSS, and this provider is
         // asked to paint on every visibility change, so a cached copy here pins
@@ -338,6 +503,28 @@ class MirrorViewProvider {
     this._page = null;
     if (this._view) this.paint(this._view);
     if (this._editor) this.paint(this._editor);
+  }
+
+  /** Panel body for a machine that cannot run any of this. Static: no page needed. */
+  static platformHtml() {
+    return `<!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <style>
+      body{margin:0;padding:1.2rem;font:13px/1.5 var(--vscode-font-family);
+           color:var(--vscode-foreground);background:var(--vscode-editor-background)}
+      h1{font-size:1em;margin:0 0 .6em;font-weight:600}
+      p{margin:0 0 .8em;color:var(--vscode-descriptionForeground)}
+      code{font-family:var(--vscode-editor-font-family)}
+    </style>
+    </head>
+    <body>
+      <h1>AVD Mirror needs Windows</h1>
+      <p>${WINDOWS_ONLY_HELP}</p>
+      <p>This machine reports <code>${process.platform} ${process.arch}</code>.</p>
+    </body>
+    </html>`;
   }
 
   _html(page) {
@@ -469,7 +656,7 @@ class MirrorViewProvider {
 // --- AVD tree view -----------------------------------------------------------
 // A row that reports why the tree is empty, instead of an empty tree.
 class ErrorItem {
-  constructor(message) { this.message = message; }
+  constructor(message, tooltip) { this.message = message; this.tooltip = tooltip; }
 }
 
 // One row per AVD, showing which one is running and which is selected. The
@@ -481,6 +668,7 @@ class AvdTreeProvider {
     this.onDidChangeTreeData = this._onDidChangeTreeData.event;
     this._state = null;
     this._error = '';
+    this._errorTooltip = '';
     this._timer = null;
   }
 
@@ -489,11 +677,24 @@ class AvdTreeProvider {
   }
 
   async poll() {
+    // On a platform that cannot run the manager there is nothing to poll: say why
+    // once, instead of retrying a server that will never answer.
+    if (unsupportedPlatform()) {
+      const error = 'AVD Mirror only runs on Windows';
+      if (this._error !== error) {
+        this._error = error;
+        this._errorTooltip = WINDOWS_ONLY_HELP;
+        output.appendLine(`AVD list unavailable: ${WINDOWS_ONLY_HELP}`);
+        this.refresh();
+      }
+      return;
+    }
     await startAvdManager();
     const st = await avdState();
     if (st) {
       this._state = st;
       this._error = '';
+      this._errorTooltip = '';
       this.refresh();
       return;
     }
@@ -509,6 +710,8 @@ class AvdTreeProvider {
   start() {
     if (this._timer) return;
     this.poll();
+    // No timer where the manager can never start: the message is already final.
+    if (unsupportedPlatform()) return;
     this._timer = setInterval(() => this.poll().catch(() => {}), 3000);
   }
 
@@ -520,7 +723,7 @@ class AvdTreeProvider {
     if (el instanceof ErrorItem) {
       const bad = new vscode.TreeItem(el.message, vscode.TreeItemCollapsibleState.None);
       bad.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('problemsWarningIcon.foreground'));
-      bad.tooltip = 'The AVD manager is not answering. See the AVD Mirror output channel.';
+      bad.tooltip = el.tooltip || 'The AVD manager is not answering. See the AVD Mirror output channel.';
       bad.contextValue = 'avdError';
       return bad;
     }
@@ -559,7 +762,7 @@ class AvdTreeProvider {
     const items = (st.avds || []).map(a => ({ name: a.name, api: a.api, device: a.device }));
     // An empty list has to say why it is empty: "no AVDs" and "manager not
     // answering" looked the same, and the second one is a bug to report.
-    if (!items.length) return [new ErrorItem(this._error || 'No AVDs found')];
+    if (!items.length) return [new ErrorItem(this._error || 'No AVDs found', this._errorTooltip)];
     return items;
   }
 }
@@ -729,6 +932,11 @@ async function toggleHide() {
 }
 
 function activate(context) {
+  // Activation is onView, i.e. the user just opened the panel or the AVD list.
+  // On the wrong OS explain that once and let everything below register inertly,
+  // so no command reports the more confusing "command 'avdMirror.open' not found".
+  if (unsupportedPlatform()) warnUnsupportedPlatform();
+  else ensureDotnetRuntime().catch(e => output.appendLine(`dotnet check: ${e && e.message ? e.message : e}`));
   const provider = new MirrorViewProvider();
   const avdTree = new AvdTreeProvider();
   avdTreeRef = avdTree;

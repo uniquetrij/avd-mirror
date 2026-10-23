@@ -11,6 +11,18 @@ would return black. Gestures are streamed to the guest as real pointer events,
 so every gesture the emulator understands — tap, hold, drag, swipe, fling,
 pinch, two-finger pan, edge system-nav — behaves as it does on the device.
 
+## Requirements
+
+- **Windows 10 build 19041 or newer.** The capture is Windows Graphics Capture
+  and the window handling is Win32, so the extension says so once and stops on
+  any other platform rather than failing with a dead panel.
+- **An Android SDK with at least one AVD**, found under `%LOCALAPPDATA%\Android\Sdk`,
+  `%ANDROID_HOME%` or `C:\Android\Sdk`.
+- **The .NET 8 runtime**, for the full-rate capturer: the bundled `wgccap.exe` is
+  framework-dependent. Without it the mirror still runs on `PrintWindow` — slower,
+  and it has the channel-swap tint — and the extension warns once, with a link,
+  instead of silently serving the fallback.
+
 ## Why a panel rather than a tab
 
 The mirror is a live, clickable screen, not a document. A browser tab brings

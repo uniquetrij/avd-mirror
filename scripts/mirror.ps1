@@ -217,7 +217,7 @@ function Invoke-Rotate {
                 [void][EmuMirrorWin]::ReshapeToGuest($script:EmuHwnd, $GSW, $GSH)
                 Start-Sleep -Milliseconds 400          # let the window settle before cropping
                 # The capturer's crop is fixed at its startup, so it must follow the rotation.
-                Restart-Capturer -GuestSize $size
+                [void](Restart-Capturer -GuestSize $size)
                 # Record the orientation the mirror just applied, so the background watcher
                 # does not immediately treat the mirror's own rotation as an external one
                 # and redo the reshape + capturer restart.
@@ -256,17 +256,41 @@ if (Test-Path $wgccapRoot) {
     Select-Object -First 1
   if ($wgccapFound) { $wgccapExe = $wgccapFound.FullName }
 }
+function Test-Capturer {
+  try {
+    return (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8778/health' -TimeoutSec 1).StatusCode -eq 200
+  } catch { return $false }
+}
+# Returns 'ok', 'missing', 'died' or 'timeout'. Start-Process succeeds even when
+# the apphost immediately dies - a missing .NET 8 runtime is the usual reason -
+# so the startup call verifies the capturer really answers on 8778 instead of
+# logging one that was never there, leaving the page merely slow and tinted.
+# -Verify is opt-in: Restart-Capturer runs on the request path and does its own
+# bounded wait, so it must not pay for a second one here.
 function Start-Capturer {
-  param([string]$GuestSize)
-  if (-not (Test-Path $wgccapExe)) { return $false }
-  Start-Process -FilePath $wgccapExe -ArgumentList '--proc','qemu-system-x86_64','--port','8778','--gsize',$GuestSize -WindowStyle Hidden
-  return $true
+  param([string]$GuestSize, [switch]$Verify)
+  if (-not (Test-Path $wgccapExe)) { return 'missing' }
+  try {
+    Start-Process -FilePath $wgccapExe -ArgumentList '--proc','qemu-system-x86_64','--port','8778','--gsize',$GuestSize -WindowStyle Hidden -ErrorAction Stop
+  } catch {
+    [Console]::Out.WriteLine("wgccap.exe would not launch: $($_.Exception.Message)")
+    return 'died'
+  }
+  if (-not $Verify) { return 'ok' }
+  $deadline = [datetime]::UtcNow.AddSeconds(6)
+  while ([datetime]::UtcNow -lt $deadline) {
+    if (Test-Capturer) { return 'ok' }
+    if (-not (Get-Process wgccap -ErrorAction SilentlyContinue)) { return 'died' }
+    Start-Sleep -Milliseconds 150
+  }
+  return 'timeout'
 }
 if (-not (Get-Process wgccap -ErrorAction SilentlyContinue)) {
-  if (Start-Capturer -GuestSize $gsize) {
-    Write-Output 'WGC capturer (wgccap) started on http://127.0.0.1:8778/'
-  } else {
-    Write-Output 'wgccap.exe not built - PrintWindow fallback only (build src\wgccap for full-rate)'
+  switch (Start-Capturer -GuestSize $gsize -Verify) {
+    'ok'      { Write-Output 'WGC capturer (wgccap) started on http://127.0.0.1:8778/' }
+    'missing' { Write-Output 'wgccap.exe not built - PrintWindow fallback only (build src\wgccap for full-rate)' }
+    'died'    { Write-Output 'wgccap.exe exited straight away - is the .NET 8 runtime installed? (dotnet --list-runtimes) - PrintWindow fallback only' }
+    default   { Write-Output 'wgccap.exe started but never answered on 8778 - PrintWindow fallback only' }
   }
 }
 
@@ -277,7 +301,7 @@ if (-not (Get-Process wgccap -ErrorAction SilentlyContinue)) {
 # falls back to PrintWindow on /frame.jpg while the capturer is down.
 function Restart-Capturer {
   param([string]$GuestSize)
-  if (-not (Test-Path $wgccapExe)) { return }
+  if (-not (Test-Path $wgccapExe)) { return $false }
   Get-Process wgccap -ErrorAction SilentlyContinue | ForEach-Object {
     try { $_.Kill(); [void]$_.WaitForExit(3000) } catch { }
   }
@@ -287,10 +311,9 @@ function Restart-Capturer {
   $deadline = [datetime]::UtcNow.AddMilliseconds(5000)
   while ([datetime]::UtcNow -lt $deadline) {
     Start-Sleep -Milliseconds 120
-    try {
-      if ((Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8778/health' -TimeoutSec 1).StatusCode -eq 200) { return }
-    } catch { }
+    if (Test-Capturer) { return $true }
   }
+  return $false
 }
 
 # The console listens on the emulator's adb port (emulator-5554 -> 5554). It is
@@ -398,7 +421,7 @@ function Update-EmulatorTarget {
   # frames and then exits, taking port 8778 with it. The page then fails to
   # fetch and shows "reconnecting" even though the mirror is fine. Restart it
   # against the new window.
-  try { Restart-Capturer -GuestSize (Get-GuestSize) } catch { }
+  try { [void](Restart-Capturer -GuestSize (Get-GuestSize)) } catch { }
 
   # Console.Out rather than Write-Output: the output stream is buffered when it
   # is redirected to a file or a pipe, so these lifecycle messages would not
@@ -414,12 +437,19 @@ function Update-EmulatorTarget {
 # rate-limited so it costs one Get-Process every couple of seconds rather than
 # one per request (the page polls at ~100/s).
 $script:CapCheckAt = [datetime]::MinValue
+$script:CapFailAt = [datetime]::MinValue
 function Ensure-Capturer {
   if (([datetime]::UtcNow - $script:CapCheckAt).TotalMilliseconds -lt 2000) { return }
   $script:CapCheckAt = [datetime]::UtcNow
   if (Get-Process wgccap -ErrorAction SilentlyContinue) { return }
   if (-not $script:EmuProc -or $script:EmuProc.HasExited) { return }   # no window to capture
-  try { Restart-Capturer -GuestSize (Get-GuestSize) } catch { }
+  # A restart waits up to 5 s for /health, and this runs on the request path, so a
+  # capturer that keeps failing - one that cannot start at all because the .NET 8
+  # runtime is missing - must not be retried on every poll.
+  if (([datetime]::UtcNow - $script:CapFailAt).TotalSeconds -lt 30) { return }
+  try {
+    if (-not (Restart-Capturer -GuestSize (Get-GuestSize))) { $script:CapFailAt = [datetime]::UtcNow }
+  } catch { $script:CapFailAt = [datetime]::UtcNow }
 }
 
 # --- touch engine: host pointer state -> MT protocol B events ----------------
@@ -1059,17 +1089,68 @@ $html = @'
            from a measurement, so it cannot form a layout feedback loop - #keylayer is
            absolutely positioned and never changes #stage's size. */
             #stage{position:relative;flex:1;min-height:0;display:flex;box-sizing:border-box}
- #barrow{display:flex;align-items:stretch;background:#161b22;border-bottom:1px solid #30363d}
- #bar{flex:1 1 auto;min-width:0;padding:6px 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+ /* Toolbar chrome is drawn from VS Code's own colour variables, so the panel
+    belongs to the editor in a light theme as well as a dark one. Everything that
+    draws the *device* - the screen field, the letterbox, the soft-key strip and
+    the hardware keys - stays hard-coded near-black on purpose: that is a phone
+    bezel, not chrome, and a themed (near-white) strip butting into the black
+    screen reads as a rendering bug. The fallbacks keep a plain browser tab on
+    the GitHub-dark palette this page started with. */
+ :root{
+  --tb-bg:var(--vscode-sideBar-background,#161b22);
+  --tb-fg:var(--vscode-foreground,#c9d1d9);
+  --tb-border:var(--vscode-panel-border,#30363d);
+  --tb-btn:var(--vscode-button-secondaryBackground,#21262d);
+  --tb-btn-fg:var(--vscode-button-secondaryForeground,#c9d1d9);
+  --tb-btn-hover:var(--vscode-button-secondaryHoverBackground,#30363d);
+  --tb-accent:var(--vscode-button-background,#1f6feb);
+  --tb-accent-fg:var(--vscode-button-foreground,#fff);
+  --tb-muted:var(--vscode-descriptionForeground,#8b949e);
+  --tb-ok:#3fb950;--tb-warn:#d29922;--tb-err:#f85149;
+ }
+ /* Three zones, left to right: the tool strip, the AVD control, the help button.
+    Only the strip may shrink - min-width:0 plus its own horizontal scroll - and
+    the other two are pinned. "Start an emulator" is the reason this panel
+    exists, so it must never be the thing that scrolls out of reach; that is
+    exactly the bug the help button had, and the reason it was moved out of the
+    strip already. */
+ #barrow{display:flex;align-items:stretch;background:var(--tb-bg);border-bottom:1px solid var(--tb-border)}
+ #bar{flex:1 1 auto;min-width:64px;padding:6px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
  #m{flex:1;min-height:0;object-fit:contain;background:#000;cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
- #st{color:#f85149}
- #inp{color:#d29922}
- #bar button{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:2px 7px;font:12px system-ui,sans-serif;cursor:pointer;line-height:16px}
- #bar button:hover{background:#30363d}
+ /* Status is a state *dot* plus text, and the text truncates instead of shoving
+    the controls along. "reconnecting... (no emulator running)" is long enough to
+    reflow the whole strip on its own, and it reflows again the moment it clears;
+    the dot carries the state and the title keeps the full string. Red is
+    reserved for a lost connection - a cold start is not an error, and painting
+    it red made every normal connect look like a failure. */
+ #status{display:inline-flex;align-items:center;gap:5px;flex:0 1 auto;min-width:64px;max-width:190px}
+ #dot{display:block;width:7px;height:7px;border-radius:50%;background:var(--tb-muted);flex:0 0 auto}
+ #status[data-state="live"] #dot{background:var(--tb-ok)}
+ #status[data-state="idle"] #dot{background:var(--tb-warn)}
+ #status[data-state="error"] #dot{background:var(--tb-err)}
+ #status[data-state="error"] #st{color:var(--tb-err)}
+ #st{color:var(--tb-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+ /* Telemetry, not controls: muted, and given fixed widths so a frame counter
+    going 9 -> 10 -> 100 does not shove every button to its right. */
+ #stats{display:inline-flex;align-items:center;gap:8px;color:var(--tb-muted);opacity:.7;
+        font-variant-numeric:tabular-nums;white-space:nowrap;flex:0 1 auto;min-width:0}
+ #stats #src{min-width:3.2ch}
+ #stats #fps{min-width:5.2ch;text-align:right}
+ #stats #dim{min-width:9.2ch;text-align:right}
+ #inp{color:var(--tb-warn)}
+ #bar button,#avdbar button{background:var(--tb-btn);color:var(--tb-btn-fg);border:1px solid var(--tb-border);
+   border-radius:5px;padding:2px 7px;font:12px system-ui,sans-serif;cursor:pointer;line-height:16px}
+ #bar button:hover,#avdbar button:hover:not(:disabled){background:var(--tb-btn-hover)}
+ /* Keyboard focus had no styling at all - ~10 buttons and not one visible focus
+    ring, so tabbing through the panel was invisible. */
+ #bar button:focus-visible,#avdbar button:focus-visible,#avdbar select:focus-visible,
+ #navbar button:focus-visible,#pwr:focus-visible,.volkey:focus-visible,#helpbtn:focus-visible{
+   outline:2px solid var(--vscode-focusBorder,#58a6ff);outline-offset:1px}
  /* The hide toggle is a state, not a momentary action: the emulator window is
-    currently parked off-screen. */
- #bar button[aria-pressed="true"]{background:#1f6feb;border-color:#1f6feb;color:#fff}
- #bar button[aria-pressed="true"]:hover{background:#388bfd}
+    currently parked off-screen. Blue is the accent, and it means "active" -
+    the same blue the AVD button uses for its primary action. */
+ #bar button[aria-pressed="true"]{background:var(--tb-accent);border-color:var(--tb-accent);color:var(--tb-accent-fg)}
+ #bar button[aria-pressed="true"]:hover{filter:brightness(1.15)}
   /* Soft nav keys sit under the screen, centred on 25/50/75% of the *displayed
      guest image* rather than the window: the image is object-fit:contain, so
      whenever there are side letterboxes the two widths differ and anchoring to
@@ -1178,8 +1259,17 @@ $html = @'
        #bar::-webkit-scrollbar{height:4px}
        #bar::-webkit-scrollbar-track{background:transparent}
        #bar::-webkit-scrollbar-thumb{background:#30363d;border-radius:2px}
-       #bar b{display:none}
+       /* Telemetry goes first: it is decoration next to the AVD control pinned
+          beside it, and a frame counter should never be what pushes a control
+          out of view in a 320 px panel. */
+       #stats{display:none}
+       #status{max-width:72px;min-width:34px}
        #bar button{padding:0 4px;font-size:10px;line-height:12px}
+       #sdir .lbl{display:none}
+       #avdbar{max-width:58%;padding:0 4px}
+       #avdbar select{max-width:130px;font-size:10px;padding:1px 2px}
+       #avdbar button{min-width:0;padding:0 5px;font-size:10px;line-height:12px}
+       .avdstate .txt{display:none}
        #helpbtn{width:18px;height:18px;font-size:11px}
        /* --barh must be set on #wrap, the shared ancestor: #stage and #navbar are
           siblings, so overriding it on #navbar alone would resize the bar without
@@ -1197,19 +1287,26 @@ $html = @'
      They turn the guest display itself, so they belong with the other chrome
      controls rather than in the letterbox with the hardware keys. */
   #rot{display:inline-flex;align-items:center;gap:4px}
-  /* AVD picker: a select plus start/stop, in the same toolbar as the rest of the
-     controls. The AVD manager runs on its own port and is a separate origin, so
-     the page talks to it cross-origin. */
-  #avdctl{display:inline-flex;align-items:center;gap:4px}
-  #avdctl b{font-weight:600;color:#8b949e;font-size:11px}
-  #avdctl select{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;
-   font:12px system-ui,sans-serif;padding:2px 4px;max-width:190px}
-  #avdctl button{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;
-   padding:2px 7px;font:12px system-ui,sans-serif;cursor:pointer;line-height:16px}
-  #avdctl button:hover:not(:disabled){background:#30363d}
-  #avdctl button:disabled{opacity:.5;cursor:default}
-  #avdctl .avdstate{color:#8b949e;font-size:11px;min-width:58px}
-  #rot b{font-weight:600;color:#8b949e;font-size:11px}
+  /* The AVD zone: a select that shrinks first, one primary button, and a state
+     dot. The dot's word is dropped in the compact layout - the button's own
+     label already says what the state is ("Start" / "Stop" / "Booting..."), so
+     the word was the most expensive way to repeat it in a 320 px panel. */
+  #avdbar{flex:0 1 auto;min-width:0;display:flex;align-items:center;gap:4px;
+   padding:0 8px;border-left:1px solid var(--tb-border);max-width:min(62%,300px)}
+  #avdbar select{min-width:0;flex:1 1 auto;max-width:190px;background:var(--tb-btn);color:var(--tb-btn-fg);
+   border:1px solid var(--tb-border);border-radius:5px;font:12px system-ui,sans-serif;padding:2px 4px}
+  #avdbar select:disabled{opacity:.5}
+  #avdbar button{flex:0 0 auto;min-width:46px}
+  #avdbar button.primary{background:var(--tb-accent);border-color:var(--tb-accent);
+   color:var(--tb-accent-fg);font-weight:600}
+  #avdbar button.primary:hover:not(:disabled){filter:brightness(1.12)}
+  #avdbar button:disabled{opacity:.5;cursor:default}
+  .avdstate{display:inline-flex;align-items:center;gap:4px;color:var(--tb-muted);
+   font-size:11px;white-space:nowrap;flex:0 0 auto}
+  .avdstate::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--tb-muted);flex:0 0 auto}
+  .avdstate.running::before{background:var(--tb-ok)}
+  .avdstate.starting::before,.avdstate.busy::before{background:var(--tb-warn)}
+  .avdstate.none::before{background:var(--tb-err)}
   #rot button{padding:0 6px;font-size:13px;line-height:16px}
   #pwr:hover,.volkey:hover{background:#30363d}
   /* The "no emulator" state. It covers the whole stage so the screen reads as
@@ -1235,8 +1332,7 @@ $html = @'
    background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:50%;
    font:italic 600 12px/1 Georgia,serif;line-height:1;cursor:pointer}
   #helpbtn:hover{background:#30363d}
-  #helpbtn[aria-expanded="true"]{background:#30363d;border-color:#58a6ff}
-  #helpbtn[aria-expanded="true"]{background:#30363d;border-color:#58a6ff}
+  #helpbtn[aria-expanded="true"]{background:#30363d;border-color:var(--vscode-focusBorder,#58a6ff)}
   #helppop{position:absolute;top:0;right:0;z-index:30;box-sizing:border-box;
    width:min(30rem,calc(100% - 1.2rem));
    margin:var(--barpop,2.6rem) .6rem 0 0;padding:.8rem 1rem;background:#161b22;color:#c9d1d9;
@@ -1252,8 +1348,20 @@ $html = @'
   </style></head>
  <body><div id="wrap">
   <div id="barrow">
-  <div id="bar"><b>AVD Mirror</b><span id="st">connecting...</span><span id="src"></span><span id="fps"></span><span id="dim"></span>
-   <button id="sdir">Natural &#8645;</button><button id="hideemu" title="Hide the emulator window - it stays off-screen and keeps mirroring" aria-pressed="false">Hide</button><span id="rot" class="rotgrp"><b>Rotate</b><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span><span id="avdctl"><b>AVD</b><select id="avdsel" title="Select an AVD"></select><button id="avdgo" title="Start the selected AVD">Start</button><button id="avdstop" title="Stop the running AVD">Stop</button><span class="avdstate" id="avdstate"></span></span><span id="inp"></span></div>
+  <div id="bar">
+   <span id="status" data-state="idle"><i id="dot"></i><span id="st">connecting...</span></span>
+   <span id="stats"><span id="src"></span><span id="fps"></span><span id="dim"></span></span>
+   <button id="sdir" title="Scroll direction - click to toggle"><span class="lbl">Natural</span> &#8645;</button>
+   <span id="rot"><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span>
+   <button id="hideemu" title="Hide the emulator window - it stays off-screen and keeps mirroring" aria-pressed="false">Hide</button>
+   <span id="inp"></span>
+  </div>
+  <!-- The AVD control is a sibling of the tool strip, not its last item, for the
+       same reason the help button is: the compact layout makes the strip a single
+       nowrap row that overflows, and anything at its far end - the AVD picker
+       above all, since starting an emulator is what this panel is for - ends up
+       past the right edge of a 320 px panel. Pinned, it stays reachable. -->
+  <div id="avdbar"><select id="avdsel" title="Select an AVD" aria-label="Select an AVD"></select><button id="avdgo" class="primary" title="Start the selected AVD">Start</button><span class="avdstate stopped" id="avdstate" title="AVD: stopped"><span class="txt">stopped</span></span></div>
    <!-- The help button is a sibling of the tool strip, not its last item: the
         compact layout makes the strip a single nowrap row that overflows, and
         an in-flow button at the end of it lands past the right edge of the
@@ -1312,7 +1420,14 @@ const img=document.getElementById('m'),st=document.getElementById('st'),
       fps=document.getElementById('fps'),dim=document.getElementById('dim'),
       srcEl=document.getElementById('src'),navbar=document.getElementById('navbar'),
       stage=document.getElementById('stage'),kl=document.getElementById('keylayer'),
-      noemuEl=document.getElementById('noemu');
+      noemuEl=document.getElementById('noemu'),statusEl=document.getElementById('status');
+
+// One place sets the status line, so the dot and the text can never disagree.
+// `idle` is neutral rather than an error: red is reserved for a lost connection,
+// otherwise every cold start reads as a failure.
+function setStatus(text,state){
+  st.textContent=text; st.title=text; statusEl.dataset.state=state;
+}
 
 // Blank the screen and say why, while no emulator is running. Keeping the last
 // frame on screen was misleading - it looked like a live picture of an app that
@@ -1424,7 +1539,7 @@ async function tick(){
       img.src=u;
       n++;
     }
-    st.textContent='live'; st.style.color='#3fb950';
+    setStatus('live','live');
     srcEl.textContent=srcName;
     const el=(performance.now()-t0)/1000;
     if(el>=1){ fps.textContent=(n/el).toFixed(0)+' fps'; n=0; t0=performance.now(); }
@@ -1436,8 +1551,7 @@ async function tick(){
     // Otherwise the panel reads "reconnecting" while the server is perfectly
     // healthy, which points the reader at the wrong problem.
     const noEmu=/no emulator/i.test(e&&e.message?e.message:String(e));
-    st.textContent=noEmu?'no emulator running':'reconnecting... ('+e+')';
-    st.style.color=noEmu?'#d29922':'#f85149';
+    setStatus(noEmu?'no emulator running':'reconnecting... ('+e+')',noEmu?'idle':'error');
     if(noEmu) showNoEmulator(true);
   }
   // Self-paced. A fixed 80 ms delay capped the mirror at ~12 fps even though the
@@ -1692,12 +1806,16 @@ img.addEventListener('mousedown',e=>{ if(e.button===0) e.preventDefault(); });
 // wheel-down drags the finger down and reveals earlier content.
 let naturalScroll=true;
 try{ const v=localStorage.getItem('mirror.scrollNatural'); if(v!==null) naturalScroll=(v!=='0'); }catch(_){}
-const sdir=document.getElementById('sdir');
+const sdir=document.getElementById('sdir'), sdirLbl=sdir.querySelector('.lbl');
 function paintSdir(){
-  sdir.textContent=(naturalScroll?'Natural':'Classic')+' \u21C5';
+  // The word lives in its own span so the compact layout can drop it and leave
+  // the bare arrow - in a 320 px panel the glyph plus a title is enough, and the
+  // word cost more width than any other control in the strip.
+  sdirLbl.textContent=naturalScroll?'Natural':'Classic';
   sdir.title=(naturalScroll
     ? 'Wheel down reveals content further down (natural)'
     : 'Wheel down reveals earlier content (classic)')+' - click to toggle';
+  sdir.setAttribute('aria-label','Scroll direction: '+(naturalScroll?'natural':'classic'));
 }
 sdir.addEventListener('click',()=>{
   naturalScroll=!naturalScroll;
@@ -1842,8 +1960,12 @@ setInterval(syncHide,2000);
 // these calls are cross-origin; it sends Access-Control-Allow-Origin: *.
 const AVD_BASE='http://127.0.0.1:8779';
 const avdSel=document.getElementById('avdsel'), avdGo=document.getElementById('avdgo'),
-      avdStop=document.getElementById('avdstop'), avdState=document.getElementById('avdstate');
-let avdBusy=false;
+      avdState=document.getElementById('avdstate'), avdWord=avdState.querySelector('.txt');
+// One button, not two. Start and Stop are mutually exclusive states of the same
+// thing, so side-by-side buttons made the reader work out which one applied right
+// now; a label stating the next action does that for them, and it keeps stating
+// it through the ~40 s boot ("Booting…", still clickable to cancel).
+let avdBusy=false, avdStatus='stopped';
 
 async function avdFetch(path){
   const r=await fetch(AVD_BASE+path,{cache:'no-store'});
@@ -1851,16 +1973,33 @@ async function avdFetch(path){
   return await r.json();
 }
 
-// Refresh the dropdown and the state label. The list is re-read every time
-// rather than cached, so an AVD created or deleted elsewhere shows up.
+// Every path that changes avdBusy/avdStatus ends here, so the button label and
+// the state dot can never contradict each other.
+function paintAvd(){
+  const running=avdStatus==='running', starting=avdStatus==='starting';
+  const cls=avdStatus==='none'?'none':(running?'running':(starting?'starting':'stopped'));
+  const word=avdBusy&&cls!=='none'?'busy':(cls==='none'?'no manager':cls);
+  avdGo.textContent=starting?'Booting\u2026':(running?'Stop':'Start');
+  avdGo.dataset.act=(running||starting)?'stop':'start';
+  avdGo.disabled=avdBusy||avdStatus==='none';
+  avdGo.title=cls==='none'?'The AVD manager is not responding'
+    :starting?'Booting - click to stop it'
+    :running?'Stop the running AVD':'Start the selected AVD';
+  avdState.className='avdstate '+(avdBusy&&cls!=='none'?'busy':cls);
+  avdWord.textContent=word;
+  avdState.title='AVD: '+word;
+}
+
+// Refresh the dropdown and the state. The list is re-read every time rather
+// than cached, so an AVD created or deleted elsewhere shows up.
 async function refreshAvds(){
   try{
-    const st=await avdFetch('/avds');
-    const want=st.selected||st.running||(st.avds[0]&&st.avds[0].name)||'';
+    const avdSt=await avdFetch('/avds');
+    const want=avdSt.selected||avdSt.running||(avdSt.avds[0]&&avdSt.avds[0].name)||'';
     // Rebuild the options, keeping the current selection when it survives.
     const keep=avdSel.value||want;
     avdSel.innerHTML='';
-    for(const a of st.avds){
+    for(const a of avdSt.avds){
       const o=document.createElement('option');
       o.value=a.name;
       o.textContent=a.name+(a.api?' ('+a.api.replace('API ','api ')+')':'')+(a.running?' - running':'');
@@ -1869,16 +2008,16 @@ async function refreshAvds(){
     if(keep&&[...avdSel.options].some(o=>o.value===keep)) avdSel.value=keep;
     else if(want) avdSel.value=want;
 
-    const running=st.status==='running';
-    const starting=st.status==='starting';
-    avdState.textContent=running?'running':(starting?'starting...':(st.busy?'busy':'stopped'));
-    avdGo.disabled=avdBusy||running||starting;
-    avdStop.disabled=avdBusy||(!running&&!starting);
+    avdStatus=avdSt.status||'stopped';
     avdSel.disabled=avdBusy;
-    return st;
+    avdSel.title='Select an AVD';
+    paintAvd();
+    return avdSt;
   }catch(e){
-    avdState.textContent='no manager';
-    avdGo.disabled=true; avdStop.disabled=true;
+    // The manager is a separate process on its own port; when it is down the
+    // picker can do nothing, and saying so beats leaving it looking usable.
+    avdStatus='none'; avdSel.disabled=true; avdSel.title='The AVD manager is not responding';
+    paintAvd();
     return null;
   }
 }
@@ -1903,37 +2042,39 @@ helpBtn.addEventListener('click',e=>{ e.stopPropagation(); setHelp(helpPop.hidde
 document.addEventListener('click',e=>{ if(!helpPop.hidden) setHelp(false); });
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') setHelp(false); });
 
-avdGo.addEventListener('click',async()=>{
+avdGo.addEventListener('click',()=>{ if(avdGo.dataset.act==='stop') stopRunning(); else startSelected(); });
+
+async function startSelected(){
   const name=avdSel.value; if(!name) return;
-  avdBusy=true; await refreshAvds();
+  avdBusy=true; paintAvd();
   try{
     await fetch(AVD_BASE+'/avd/start?name='+encodeURIComponent(name),{method:'POST',cache:'no-store'});
     note('starting '+name);
   }catch(e){ note('start failed'); }
-  finally{ avdBusy=false; }
+  finally{ avdBusy=false; paintAvd(); }
   // The AVD takes ~40 s to boot. Poll until it is up rather than assuming.
   for(let i=0;i<80;i++){
     await new Promise(r=>setTimeout(r,1000));
-    const st=await refreshAvds();
-    if(st&&(st.status==='running'||st.status==='stopped')) break;
+    const avdSt=await refreshAvds();
+    if(avdSt&&(avdSt.status==='running'||avdSt.status==='stopped')) break;
   }
   await refreshAvds();
-});
+}
 
-avdStop.addEventListener('click',async()=>{
-  avdBusy=true; await refreshAvds();
+async function stopRunning(){
+  avdBusy=true; paintAvd();
   try{
     await fetch(AVD_BASE+'/avd/stop?force=0',{method:'POST',cache:'no-store'});
     note('stopping');
   }catch(e){ note('stop failed'); }
-  finally{ avdBusy=false; }
+  finally{ avdBusy=false; paintAvd(); }
   // Graceful first. If the guest does not come down, ask before forcing it -
   // a force stop loses unsaved guest state, so it is never done silently.
   let gone=false;
   for(let i=0;i<40;i++){
     await new Promise(r=>setTimeout(r,500));
-    const st=await refreshAvds();
-    if(st&&st.status==='stopped'){ gone=true; break; }
+    const avdSt=await refreshAvds();
+    if(avdSt&&avdSt.status==='stopped'){ gone=true; break; }
   }
   if(!gone){
     if(confirm('The emulator did not shut down gracefully.\n\nForce stop it now? Unsaved guest state will be lost.')){
@@ -1941,13 +2082,13 @@ avdStop.addEventListener('click',async()=>{
       note('force stopped');
       for(let i=0;i<20;i++){
         await new Promise(r=>setTimeout(r,500));
-        const st=await refreshAvds();
-        if(st&&st.status==='stopped') break;
+        const avdSt=await refreshAvds();
+        if(avdSt&&avdSt.status==='stopped') break;
       }
     }
   }
   await refreshAvds();
-});
+}
 
 refreshAvds();
 setInterval(refreshAvds,3000);
