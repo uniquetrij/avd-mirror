@@ -548,29 +548,17 @@ class MirrorViewProvider {
           "script-src 'unsafe-inline'",
         ].join('; ');
         return `<!DOCTYPE html>
-    <html lang="en" class="embed">
+    <html lang="en">
     <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="${csp}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-      /* Transparent, not black: the webview host paints the panel's own
-         background behind this document, so the letterbox around the phone
-         blends into VS Code instead of framing it in a black box. VS Code
-         ships body{background-color:transparent} itself in a @layer, and this
-         document's <style> is unlayered, so the declaration has to be repeated
-         here to take effect. */
-      :root.embed{--page:transparent;--bezel:transparent;--softkey:transparent}
-      html,body{margin:0;height:100%;background:transparent;overflow:hidden}
-      /* The hint is the only thing on screen while the page is being fetched,
-         so it sits on the panel background rather than on black - which means
-         its colours have to come from the theme to stay legible in a light
-         one. */
+      html,body{margin:0;height:100%;background:#000;overflow:hidden}
       #hint{position:absolute;inset:0;display:flex;flex-direction:column;gap:.6em;align-items:center;
-            justify-content:center;color:var(--vscode-descriptionForeground,#8b949e);
-            font:12px var(--vscode-font-family);text-align:center;
-            padding:1rem;background:transparent;z-index:9}
-      #hint a{color:var(--vscode-textLink-foreground,#4daafc);cursor:pointer}
+            justify-content:center;color:#8b949e;font:12px var(--vscode-font-family);text-align:center;
+            padding:1rem;background:#000;z-index:9}
+      #hint a{color:#4daafc;cursor:pointer}
     </style>
     </head>
     <body>
