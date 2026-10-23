@@ -1105,7 +1105,8 @@ $html = @'
   /* --page     the document behind the toolbar, and what the transparent
                 surround shows through to
      --bezel    the letterbox / screen field: transparent, so --page is visible
-     --softkey  the strip the three nav keys sit on
+     --softkey  the strip the three nav keys sit on; #navbar::before darkens it
+                one shade so it reads as the phone's chin, not as empty panel
      The webview that wraps this page sets --page:transparent so VS Code's own
      background shows through instead - see MirrorViewProvider._html. */
   --page:var(--tb-bg);
@@ -1234,7 +1235,16 @@ $html = @'
        read as 38 px above the screen bottom rather than flush with it. */
         #navbar{position:absolute;left:0;right:0;top:100%;height:var(--barh);background:var(--bezel)}
       #navbar::before{content:'';position:absolute;top:0;bottom:0;left:0;right:0;box-sizing:border-box;
-       background:var(--softkey);border:1px solid #30363d;border-bottom:0;z-index:0}
+       background:var(--softkey);
+       /* One shade below the surface. At --tb-bg the strip was the exact colour of
+          the letterbox above it and of the toolbar, so it read as empty panel
+          rather than as the phone's chin - the hairlines were doing all the work of
+          separating it. Mixed against black rather than hard-coded, so it darkens
+          whatever surface the theme hands it (a light theme gets a grey chin, not a
+          black bar); the plain declaration above is what a browser without
+          color-mix falls back to. */
+       background:color-mix(in srgb,var(--softkey) 60%,#000);
+       border:1px solid #30363d;border-bottom:0;z-index:0}
   #navbar button{position:absolute;top:50%;transform:translate(-50%,-50%);z-index:1;
    width:28px;height:28px;padding:0;
    display:flex;align-items:center;justify-content:center;
