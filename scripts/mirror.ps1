@@ -1767,20 +1767,47 @@ setInterval(()=>{
 },1500);
 
 const pts=new Map();          // pointerId -> [x,y] in guest px
-let inflight=false,dirty=false;
-function flush(){
+// One request in flight at a time, and at most one *new* request per FLUSH_GAP.
+//
+// Every pointermove used to post its own /touch. The round trip is only ~3 ms,
+// so a fast drag posted 100+ requests a second, each becoming one `event send`
+// line on the emulator console. Measured, that path is not the bottleneck: the
+// console answers a ping in 0.1 ms and the guest's evdev reader stayed in
+// lockstep with the sends, so there was no backlog to drain. What pacing buys is
+// bounded work on a single-threaded accept loop and an unacknowledged socket,
+// for no added latency - at most one request is ever in flight and the pending
+// payload is always the *newest full pointer state*, so coalescing only drops
+// intermediate positions (60 Hz is more than the guest samples). The residual
+// drag lag is display latency, ~2 frames.
+//
+// Contact changes (down / up / lift) bypass the gap: they are what makes a tap
+// feel immediate, and delaying one only risks feeding the guest a release
+// before the press it belongs to.
+const FLUSH_GAP=14;           // ms -> ~70 state updates/s
+let inflight=false,dirty=false,urgent=false,timer=0,lastSent=0;
+function pump(){
+  if(inflight||timer||!dirty) return;
+  const wait=urgent?0:FLUSH_GAP-(performance.now()-lastSent);
+  urgent=false;
+  if(wait>0){ timer=setTimeout(()=>{ timer=0; pump(); },wait); return; }
+  dirty=false;
   const p=[...pts].map(([id,v])=>id+':'+v[0]+':'+v[1]).join(',');
-  if(inflight){ dirty=true; return; }
-  inflight=true;
+  inflight=true; lastSent=performance.now();
   fetch('/touch?p='+p,{cache:'no-store'}).then(r=>{
     inflight=false;
     if(!r.ok) note('touch unavailable');
-    else if(dirty){ dirty=false; flush(); }
-  }).catch(()=>{ inflight=false; note('touch unavailable'); });
+    pump();                     // send whatever landed while this was in flight
+  }).catch(()=>{ inflight=false; note('touch unavailable'); pump(); });
 }
-function setPt(id,x,y){ pts.set(id,[Math.round(x),Math.round(y)]); flush(); }
-function delPt(id){ if(pts.delete(id)) flush(); }
-function liftAll(){ if(pts.size){ pts.clear(); flush(); } }
+function flush(isUrgent){
+  dirty=true;
+  if(isUrgent){ urgent=true; if(timer){ clearTimeout(timer); timer=0; } }
+  pump();
+}
+// A first sighting of an id is a contact going down, so it must not wait.
+function setPt(id,x,y){ const fresh=!pts.has(id); pts.set(id,[Math.round(x),Math.round(y)]); flush(fresh); }
+function delPt(id){ if(pts.delete(id)) flush(true); }
+function liftAll(){ if(pts.size){ pts.clear(); flush(true); } }
 // Keepalive while any finger is down. A press & hold emits no move events, so
 // without this the server's staleness reaper would read the silence as a dead
 // client and lift the contact mid-gesture.
