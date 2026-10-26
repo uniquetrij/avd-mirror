@@ -1131,7 +1131,20 @@ $html = @'
     strip already. */
  #barrow{display:flex;align-items:stretch;background:var(--tb-bg);border-bottom:1px solid var(--tb-border)}
  #bar{flex:1 1 auto;min-width:64px;padding:6px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
- #m{flex:1;min-height:0;object-fit:contain;background:var(--bezel);cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
+ /* #predclip exists only to clip the drag prediction: #m is translated up to
+    120 px while a drag is tracked, and without a clipping box it would paint
+    over the toolbar above and over the soft keys below. The wrapper takes the
+    flex slot #m used to hold, so the layout is otherwise unchanged. */
+     #predclip{flex:1;min-height:0;min-width:0;display:flex;position:relative;overflow:hidden}
+ #m{flex:1;min-height:0;object-fit:contain;background:var(--bezel);cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none;
+   transform:translate3d(var(--predx,0px),var(--predy,0px),0)}
+ /* The squared-corner patches sample the image's own bottom edge, so they move
+    with it; otherwise a tracked drag slides the screen out from under them. */
+ .sqcorner{transform:translate3d(var(--predx,0px),var(--predy,0px),0)}
+ /* Only the *unwind* is animated. While tracking, the offset has to land in the
+    same frame as the finger movement or it re-introduces the latency it exists
+    to hide. */
+ #stage.predsnap #m,#stage.predsnap .sqcorner{transition:transform 130ms ease-out}
  /* The captured frame is not a clean rectangle: the emulator's device skin
     rounds the display's bottom two corners, so a light arc sits *inside* the
     frame at each of them and the screen reads as rounded where it should be a
@@ -1323,7 +1336,7 @@ $html = @'
        #stats{display:none}
        #status{max-width:72px;min-width:34px}
        #bar button{padding:0 4px;font-size:10px;line-height:12px}
-       #sdir .lbl{display:none}
+       #sdir .lbl,#pred .lbl{display:none}
        #avdbar{max-width:58%;padding:0 4px}
        #avdbar select{max-width:130px;font-size:10px;padding:1px 2px}
        #avdbar button{min-width:0;padding:0 5px;font-size:10px;line-height:12px}
@@ -1410,6 +1423,7 @@ $html = @'
    <span id="status" data-state="idle"><i id="dot"></i><span id="st">connecting...</span></span>
    <span id="stats"><span id="src"></span><span id="fps"></span><span id="dim"></span></span>
    <button id="sdir" title="Scroll direction - click to toggle"><span class="lbl">Natural</span> &#8645;</button>
+   <button id="pred" title="Track the finger during a drag" aria-pressed="true"><span class="lbl">Track</span> &#8649;</button>
    <span id="rot"><button data-rot="-1" title="Rotate 90&deg; left" aria-label="Rotate left">&#8630;</button><button data-rot="1" title="Rotate 90&deg; right" aria-label="Rotate right">&#8631;</button></span>
    <button id="hideemu" title="Hide the emulator window - it stays off-screen and keeps mirroring" aria-pressed="false">Hide</button>
    <span id="inp"></span>
@@ -1454,7 +1468,7 @@ $html = @'
        long multi-line popup over the mirrored screen, and it covered the very
        content it was describing. The `alt` text still names the image for
        assistive technology. -->
-  <img id="m" alt="emulator screen"/>
+  <div id="predclip"><img id="m" alt="emulator screen"/></div>
      <!-- Square the display's bottom corners; see .sqcorner. -->
      <canvas id="sqL" class="sqcorner" aria-hidden="true"></canvas>
      <canvas id="sqR" class="sqcorner" aria-hidden="true"></canvas>
@@ -1708,8 +1722,110 @@ function patchCorners(){
   }
 }
 
+// --- drag prediction -------------------------------------------------------
+// The input path is ~3 ms (measured), but the pixels on screen are one capture
+// + encode + poll + decode + paint cycle old, ~35-45 ms end to end. A tap hides
+// that completely: it is judged by whether it landed. A drag cannot, because it
+// is judged by *position*, and a fixed delay then reads as the content sitting a
+// constant distance behind the finger.
+//
+// Android scrolls content 1:1 with the finger, so the frame captured L ms ago
+// should be drawn shifted by however far the finger has travelled in those L ms
+// - that is where the guest has already put the content, we simply have not
+// received it yet. It is a prediction, so it is capped, it only runs for a plain
+// one-finger drag, and it unwinds on its own: once the finger stops, the
+// displacement across the window goes to zero and the offset with it, so nothing
+// snaps when the drag ends.
+const PRED_MS=45;         // capture->paint latency the offset compensates
+const PRED_MAX=120;       // CSS px; a prediction, never a scroll of its own
+const PRED_TRAIL_MS=90;   // finger history kept, enough to bracket PRED_MS
+let predOn=true;
+try{ const v=localStorage.getItem('mirror.predict'); if(v!==null) predOn=(v!=='0'); }catch(_){}
+let predX=0,predY=0,predRAF=0;
+const trail=[];           // [{t,x,y}] in viewport CSS px
+function trailPush(e){
+  const t=performance.now();
+  trail.push({t,x:e.clientX,y:e.clientY});
+  while(trail.length>2 && t-trail[0].t>PRED_TRAIL_MS) trail.shift();
+}
+function trailAt(t){
+  // Linear between the two samples that bracket t. Both ends clamp, which is
+  // what makes a still finger report zero displacement instead of freezing the
+  // offset at whatever it was when the moving stopped.
+  if(!trail.length) return null;
+  if(t<=trail[0].t) return trail[0];
+  const last=trail[trail.length-1];
+  if(t>=last.t) return last;
+  for(let i=trail.length-1;i>0;i--){
+    const a=trail[i-1],b=trail[i];
+    if(t>=a.t){ const k=(t-a.t)/((b.t-a.t)||1); return {x:a.x+(b.x-a.x)*k,y:a.y+(b.y-a.y)*k}; }
+  }
+  return last;
+}
+function predTarget(){
+  // One finger, left button only. A pinch is a different gesture, and a
+  // right-drag is a hold-and-move that often shifts an object a distance the
+  // content itself does not travel - predicting that would lie about position.
+  if(!predOn||pointers.size!==1) return null;
+  for(const st of pointers.values()) if(st.ctrl||st.right) return null;
+  return trail[trail.length-1]||null;
+}
+function paintPred(){
+  const last=predTarget();
+  let dx=0,dy=0;
+  if(last){
+    const ref=trailAt(performance.now()-PRED_MS);
+    if(ref){
+      dx=last.x-ref.x; dy=last.y-ref.y;
+      const m=Math.hypot(dx,dy);
+      if(m>PRED_MAX){ dx*=PRED_MAX/m; dy*=PRED_MAX/m; }
+    }
+  }
+  if(Math.abs(dx-predX)<0.5 && Math.abs(dy-predY)<0.5) return;   // nothing to repaint
+  predX=dx; predY=dy;
+  // Via custom properties so #m and the two corner patches move as one; see the
+  // #m rule.
+  stage.style.setProperty('--predx',dx.toFixed(1)+'px');
+  stage.style.setProperty('--predy',dy.toFixed(1)+'px');
+}
+function predLoop(){
+  predRAF=0;
+  if(!pointers.size){ predStop(); return; }
+  paintPred();
+  predRAF=requestAnimationFrame(predLoop);
+}
+function predStart(){
+  // The offset is applied synchronously from pointermove as well, so it lands in
+  // the same frame as the movement; this loop only keeps unwinding it while the
+  // finger is down but still.
+  if(!predRAF && pointers.size) predRAF=requestAnimationFrame(predLoop);
+}
+function predStop(){
+  if(predRAF){ cancelAnimationFrame(predRAF); predRAF=0; }
+  if(!predX && !predY) return;
+  predX=0; predY=0;
+  // Ease the residual back instead of snapping: at the moment the finger lifts
+  // the last frames on screen are still ~40 ms behind it, so what is left of the
+  // offset is history, not error.
+  stage.classList.add('predsnap');
+  stage.style.setProperty('--predx','0px');
+  stage.style.setProperty('--predy','0px');
+  setTimeout(()=>stage.classList.remove('predsnap'),170);
+}
+
+// The prediction translates #m, and getBoundingClientRect reports the
+// *transformed* box - so everything that maps a pointer onto the guest, or
+// measures where the screen sits, has to subtract the offset. Without this a
+// tracked drag chases its own prediction and the soft keys drift with it.
+function imgBox(){
+  const r=img.getBoundingClientRect();
+  if(!predX && !predY) return r;
+  return {left:r.left-predX,top:r.top-predY,right:r.right-predX,bottom:r.bottom-predY,
+          width:r.width,height:r.height};
+}
+
 function layoutNav(){
-    const r=img.getBoundingClientRect();
+    const r=imgBox();
     const iw=img.naturalWidth||GW, ih=img.naturalHeight||GH;
     const s=Math.min(r.width/iw,r.height/ih)||1;
     const dw=iw*s, dh=ih*s;
@@ -1838,7 +1954,7 @@ window.addEventListener('resize',layoutNav);
 
 // map a client point inside the (object-fit:contain) image to guest px
 function gp(e){
-  const r=img.getBoundingClientRect();
+  const r=imgBox();
   const s=Math.min(r.width/(img.naturalWidth||GW),r.height/(img.naturalHeight||GH))||1;
   const dw=(img.naturalWidth||GW)*s,dh=(img.naturalHeight||GH)*s;
   const ox=r.left+(r.width-dw)/2,oy=r.top+(r.height-dh)/2;
@@ -1860,6 +1976,7 @@ img.addEventListener('pointerdown',e=>{
   const p=gp(e);
   const st={start:p,anchor:p,last:p,ctrl:e.ctrlKey,right:e.button===2,dragging:false};
   pointers.set(e.pointerId,st);
+  trail.length=0; trailPush(e);       // a new gesture never interpolates into the last one's history
   if(st.right){
     const id=e.pointerId;
     st.holdTimer=setTimeout(()=>{ st.dragging=true; setPt(id,p[0],p[1]); },DRAG_HOLD_MS);
@@ -1876,6 +1993,7 @@ img.addEventListener('pointerdown',e=>{
 img.addEventListener('pointermove',e=>{
   const st=pointers.get(e.pointerId); if(!st) return;
   const p=gp(e); st.last=p;
+  trailPush(e); paintPred(); predStart();
   if(st.right){
     if(!st.dragging){                     // moved before the hold elapsed -> drag now
       if(Math.abs(p[0]-st.start[0])+Math.abs(p[1]-st.start[1])<DRAG_SLOP) return;
@@ -1895,6 +2013,7 @@ img.addEventListener('pointermove',e=>{
 img.addEventListener('pointerup',e=>{
   const st=pointers.get(e.pointerId); if(!st) return;
   pointers.delete(e.pointerId);
+  predStop();
   if(st.right){
     clearTimeout(st.holdTimer);
     if(st.dragging){ delPt(e.pointerId); return; }   // right-hold / right-drag
@@ -1908,6 +2027,7 @@ img.addEventListener('pointerup',e=>{
 img.addEventListener('pointercancel',e=>{
   const st=pointers.get(e.pointerId); if(!st) return;
   pointers.delete(e.pointerId);
+  predStop();
   if(st.right){ clearTimeout(st.holdTimer); if(st.dragging) delPt(e.pointerId); return; }
   if(st.ctrl){ delPt(e.pointerId+'a'); delPt(e.pointerId+'b'); }
   else delPt(e.pointerId);
@@ -1945,6 +2065,25 @@ sdir.addEventListener('click',()=>{
   paintSdir(); liftAll();
 });
 paintSdir();
+
+// The tracking toggle. It is a state, not an action, so it reports itself the
+// same way the Hide toggle does and remembers the choice.
+const predBtn=document.getElementById('pred');
+function paintPredBtn(){
+  predBtn.setAttribute('aria-pressed',predOn?'true':'false');
+  predBtn.title=(predOn
+    ? 'Tracking the finger: during a drag the screen is drawn ahead of the video pipeline, where the guest has already put the content'
+    : 'Not tracking: the screen is shown exactly as received, about two frames behind the finger')
+    +' - click to toggle';
+  predBtn.setAttribute('aria-label','Drag tracking: '+(predOn?'on':'off'));
+}
+predBtn.addEventListener('click',()=>{
+  predOn=!predOn;
+  try{ localStorage.setItem('mirror.predict',predOn?'1':'0'); }catch(_){}
+  paintPredBtn();
+  if(predOn) predStart(); else predStop();
+});
+paintPredBtn();
 
   // A wheel burst becomes a real drag under the cursor. The anchor is re-taken
   // from the cursor on every flush instead of being carried forward: a carried
