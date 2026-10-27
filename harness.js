@@ -21,6 +21,7 @@ const vscodeMock = {
     }
   },
   TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+  TreeItemCheckboxState: { Unchecked: 0, Checked: 1 },
   ProgressLocation: { Notification: 15, Window: 10 },
   ViewColumn: { Active: -1 },
   StatusBarAlignment: { Left: 1, Right: 2 },
@@ -33,7 +34,11 @@ const vscodeMock = {
     registerWebviewViewProvider: () => ({ dispose() {} }),
     createTreeView: (id, opts) => {
       calls.push(['createTreeView', id, opts.treeDataProvider]);
-      return { dispose() {}, onDidChangeVisibility: () => ({ dispose() {} }) };
+      return {
+        dispose() {},
+        onDidChangeVisibility: () => ({ dispose() {} }),
+        onDidChangeCheckboxState: (fn) => { calls.push(['onDidChangeCheckboxState', fn]); return { dispose() {} }; },
+      };
     },
     createWebviewPanel: () => ({ webview: {}, onDidDispose: () => ({ dispose() {} }), reveal() {}, dispose() {} }),
     showErrorMessage: mk('showErrorMessage'),
@@ -174,9 +179,6 @@ const ext = require('./extension.js');
     }
   }
 
-  console.log('failures:', failures.length ? failures.join(' | ') : 'none');
-  if (failures.length) { console.log('HARNESS FAILED'); process.exit(1); }
-
   // Build a tree item through the provider to check the icon/description path.
   const prov = calls.find(c => c[0] === 'createTreeView');
   console.log('tree view created:', !!prov);
@@ -188,11 +190,41 @@ const ext = require('./extension.js');
       const item = tree.getTreeItem(k);
       console.log(`  item "${item.label}" desc="${item.description}" icon=${item.iconPath.id} color=${item.iconPath.color ? item.iconPath.color.id : 'none'} ctx=${item.contextValue}`);
     }
+
+    // Every AVD row expands into its own three display switches, and the same
+    // three are title-bar commands as on/off pairs. A missing half of a pair
+    // means one icon never changes, which looks like a broken switch.
+    const avd = kids.find(k => k && k.name);
+    if (avd) {
+      const rows = await tree.getChildren(avd);
+      const items = rows.map(k => tree.getTreeItem(k));
+      console.log(`  ${avd.name} display rows:`, items.map(i => `${i.label}=${i.checkboxState}`).join(', '));
+      if (items.length !== 3) failures.push(`${avd.name}: expected 3 display rows, got ${items.length}`);
+      const wantIcons = { Panel: ['layout-panel', 'layout-panel-off'], 'Editor Tab': ['screen-full', 'screen-normal'], Browser: ['globe', 'circle-slash'] };
+      for (const row of items) {
+        const pair = wantIcons[row.label];
+        if (!pair) { failures.push(`unexpected display row "${row.label}"`); continue; }
+        if (row.checkboxState === undefined) failures.push(`${row.label}: no checkboxState`);
+        if (!pair.includes(row.iconPath.id)) failures.push(`${row.label}: icon ${row.iconPath.id} not in ${pair.join('/')}`);
+      }
+    } else {
+      failures.push('tree: no AVD row to expand');
+    }
+
+    const pairs = [
+      ['showInPanel', 'hideFromPanel'], ['showInEditor', 'hideFromEditor'], ['showInBrowser', 'hideFromBrowser'],
+    ];
+    for (const [on, off] of pairs) {
+      if (!run('avdMirror.' + on)) failures.push(`avdMirror.${on}: not registered`);
+      if (!run('avdMirror.' + off)) failures.push(`avdMirror.${off}: not registered`);
+    }
   }
 
   // And confirm the manager answers, which is what the tree reads.
   const health = await fetch('http://127.0.0.1:8779/health').then(r => r.text()).catch(e => 'ERR ' + e.message);
   console.log('manager health:', health);
+  console.log('failures:', failures.length ? failures.join(' | ') : 'none');
+  if (failures.length) { console.log('HARNESS FAILED'); process.exit(1); }
   ext.deactivate();
   console.log('deactivate() OK');
   // The tree polls on a timer; exit explicitly rather than waiting it out.

@@ -55,11 +55,29 @@ installed VSIX.
    `mirror.ps1` on port 8777 if it is not already running; the frame appears as
    soon as the server answers. **AVDs** lists every AVD with its state and can
    start or stop them.
-3. Full height is one click away — the `⤢` action in the Screen tab's title bar,
+3. Where the mirror appears is chosen **per AVD**. Every AVD row in the **AVDs**
+   tree expands into its own three switches — **Panel**, **Editor Tab**,
+   **Browser** — and ticking one opens or closes that surface for that AVD.
+   The same three sit in the AVDs title bar as icon toggles (panel, editor,
+   browser) that light up when the surface is on, so the current placement is
+   readable without expanding a row.
+   - The mirror binds to one emulator window, so only one AVD at a time can be on
+     screen. Ticking a surface on a *different* AVD is refused with a message
+     naming the AVD in the way, and new AVDs start with nothing ticked.
+   - The checks follow reality: close the editor tab by hand and the box clears
+     itself. Unchecking **Panel** closes the whole panel (there is no API to hide
+     a single view), which takes the AVDs view and its switches with it — the
+     Command Palette or the status bar entry is then the way back.
+   - **Browser** cannot be closed by VS Code: unchecking it stops the extension
+     counting that tab as shown, nothing more.
+   - `AVD Mirror: Choose Where to Show` (Command Palette) offers the same three
+     for the current AVD as one multi-select, so "panel and browser, but no editor
+     tab" is a state you can hold.
+4. Full height is one click away — the `⤢` action in the Screen tab's title bar,
    or `AVD Mirror: Open Full Screen (Editor Tab)`, opens the same mirror as an
    editor tab.
-4. Command Palette → `AVD Mirror:` for Open Panel / Start / Stop / Restart /
-   Reload.
+5. Command Palette → `AVD Mirror:` for Open Panel / Choose Where to Show / Start /
+   Stop / Restart / Reload.
 
 Server logs go to the **AVD Mirror** output channel.
 

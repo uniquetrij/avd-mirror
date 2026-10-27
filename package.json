@@ -2,7 +2,7 @@
     "name":  "avd-mirror",
     "displayName":  "AVD Mirror",
     "description":  "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
-    "version": "0.3.11",
+    "version": "0.3.13",
     "publisher":  "local",
     "license":  "MIT",
     "engines":  {
@@ -39,6 +39,48 @@
                                              "title":  "Open Full Screen (Editor Tab)",
                                              "category":  "AVD Mirror",
                                              "icon":  "$(screen-full)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.toggleDisplay",
+                                             "title":  "Choose Where to Show",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(multiple-windows)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.showInPanel",
+                                             "title":  "Show Mirror in Panel",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(layout-panel)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.hideFromPanel",
+                                             "title":  "Hide Mirror from Panel",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(layout-panel-off)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.showInEditor",
+                                             "title":  "Show Mirror in Editor Tab",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(screen-full)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.hideFromEditor",
+                                             "title":  "Hide Mirror from Editor Tab",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(screen-normal)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.showInBrowser",
+                                             "title":  "Show Mirror in Browser",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(globe)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.hideFromBrowser",
+                                             "title":  "Hide Mirror from Browser",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(circle-slash)"
                                          },
                                          {
                                              "command":  "avdMirror.start",
@@ -115,21 +157,65 @@
                                                              "group":  "navigation@1"
                                                          },
                                                          {
+                                                             "command":  "avdMirror.showInPanel",
+                                                             "when":  "view == avdMirror.avds && !avdMirror.shown.panel",
+                                                             "group":  "navigation@0"
+                                                         },
+                                                         {
+                                                             "command":  "avdMirror.hideFromPanel",
+                                                             "when":  "view == avdMirror.avds && avdMirror.shown.panel",
+                                                             "group":  "navigation@0"
+                                                         },
+                                                         {
+                                                             "command":  "avdMirror.showInEditor",
+                                                             "when":  "view == avdMirror.avds && !avdMirror.shown.editor",
+                                                             "group":  "navigation@1"
+                                                         },
+                                                         {
+                                                             "command":  "avdMirror.hideFromEditor",
+                                                             "when":  "view == avdMirror.avds && avdMirror.shown.editor",
+                                                             "group":  "navigation@1"
+                                                         },
+                                                         {
+                                                             "command":  "avdMirror.showInBrowser",
+                                                             "when":  "view == avdMirror.avds && !avdMirror.shown.browser",
+                                                             "group":  "navigation@2"
+                                                         },
+                                                         {
+                                                             "command":  "avdMirror.hideFromBrowser",
+                                                             "when":  "view == avdMirror.avds && avdMirror.shown.browser",
+                                                             "group":  "navigation@2"
+                                                         },
+                                                         {
                                                              "command":  "avdMirror.startAvd",
                                                              "when":  "view == avdMirror.avds",
-                                                             "group":  "navigation@1"
+                                                             "group":  "navigation@3"
                                                          },
                                                          {
                                                              "command":  "avdMirror.stopAvd",
                                                              "when":  "view == avdMirror.avds",
-                                                             "group":  "navigation@2"
+                                                             "group":  "navigation@4"
                                                          },
                                                          {
                                                              "command":  "avdMirror.refreshAvds",
                                                              "when":  "view == avdMirror.avds",
-                                                             "group":  "navigation@3"
+                                                             "group":  "navigation@5"
                                                          }
                                                      ],
+                                      "commandPalette":  [
+                                                             {
+                                                                 "command":  "avdMirror.hideFromPanel",
+                                                                 "when":  "false"
+                                                             },
+                                                             {
+                                                                 "command":  "avdMirror.hideFromEditor",
+                                                                 "when":  "false"
+                                                             },
+                                                             {
+                                                                 "command":  "avdMirror.hideFromBrowser",
+                                                                 "when":  "false"
+                                                             }
+                                                         ],
                                       "view/item/context":  [
                                                                 {
                                                                     "command":  "avdMirror.startAvd",
