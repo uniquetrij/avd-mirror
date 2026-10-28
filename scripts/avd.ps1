@@ -40,6 +40,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Which script this process actually loaded, so the extension can tell a manager
+# left behind by an older build apart from the one it ships (see /build).
+$script:BuildId = ''
+try {
+  $script:BuildId = (Get-FileHash -Algorithm SHA256 -LiteralPath $PSCommandPath).Hash.Substring(0, 12).ToLowerInvariant()
+} catch { }
+
 # --- locate the Android SDK -------------------------------------------------
 $sdkRoot = $env:LOCALAPPDATA
 if (-not (Test-Path (Join-Path $sdkRoot 'Android\Sdk'))) { $sdkRoot = $env:ANDROID_HOME }
@@ -398,6 +405,12 @@ while ($true) {
     }
     elseif ($path -like '/health*') {
       Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes('ok'))
+    }
+    elseif ($path -like '/build*') {
+      # Which script is running, so the extension can replace a manager left
+      # behind by an older build instead of adopting it.
+      $body = '{"build":"' + $script:BuildId + '","pid":' + $PID + '}'
+      Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
     }
     elseif ($path -like '/avds*') {
       Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes((Get-AvdsJson)))

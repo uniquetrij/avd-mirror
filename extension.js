@@ -5,7 +5,8 @@
 // server's lifetime and embeds the result.
 
 const vscode = require('vscode');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
+const crypto = require('crypto');
 const net = require('net');
 const path = require('path');
 const os = require('os');
@@ -88,6 +89,71 @@ function findScript(rel) {
 /** Locate mirror.ps1 - the screen capture and input server. */
 function findMirrorScript() {
   return findScript(REL);
+}
+
+/**
+ * Short hash of a script on disk.
+ *
+ * The server can outlive the extension that spawned it: VS Code reloads the
+ * extension host, the old powershell keeps the port, and the next startServer()
+ * sees /gsize alive and adopts it. The panel then runs an older build's page,
+ * capture and window code behind a newer menu, and nothing says so. So both
+ * sides hash the file and compare - see /build in mirror.ps1.
+ */
+function scriptBuild(file) {
+  try {
+    return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
+/** Ask the running server which build it is. Null when it cannot say. */
+async function serverInfo() {
+  try {
+    const res = await fetch(`http://${HOST}:${PORT}/build`, {
+      signal: AbortSignal.timeout(700),
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which process is listening on `port`, according to the OS.
+ *
+ * /build reports its own pid, but a server older than the handshake cannot
+ * report anything - and that older server is exactly the one that has to go.
+ * netstat knows who owns the port, so ask it rather than give up on the case
+ * that matters most.
+ */
+function listenerPid(port) {
+  try {
+    const out = execFileSync('netstat', ['-ano'], {
+      encoding: 'utf8', windowsHide: true, timeout: 5000,
+    });
+    const m = out.match(new RegExp(`^\\s*TCP\\s+\\S+:${port}\\s+\\S+\\s+LISTENING\\s+(\\d+)`, 'mi'));
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Stop a process this session did not spawn, by the pid the server reports. */
+function killProcessByPid(pid, label) {
+  if (!pid) {
+    output.appendLine(`could not identify the stale ${label}`);
+    return;
+  }
+  try {
+    process.kill(pid);
+    output.appendLine(`stopped stale ${label} (pid ${pid})`);
+  } catch (e) {
+    output.appendLine(`could not stop stale ${label} (pid ${pid}): ${e && e.message ? e.message : e}`);
+  }
 }
 
 /** Locate avd.ps1 - the AVD manager. */
@@ -203,17 +269,38 @@ function portBindable(port) {
   });
 }
 
+/** Wait until nothing answers on `port` and it can be bound again. */
+async function waitPortFree(port) {
+  for (let tries = 0; tries < 20; tries++) {
+    if (!(await avdManagerUp(port)) && (await portBindable(port))) return true;
+    await new Promise(r => setTimeout(r, 150));
+  }
+  return false;
+}
+
 /**
  * Which port the manager should use.
  *
- * A manager that already answers wins, so a second extension host (or a harness
- * run) adopts the running one instead of starting a rival. Otherwise the first
- * bindable candidate is taken, which is what makes a port left behind by a dead
- * process an inconvenience instead of a dead feature.
+ * An already-answering manager wins, but only if it is the build this extension
+ * ships: one left behind by an older build answers /health just as readily while
+ * running the old start/stop logic, so the new commands look like they worked and
+ * did nothing. A stale manager is stopped and its port reused. Otherwise the
+ * first bindable candidate is taken, which is what makes a port left behind by a
+ * dead process an inconvenience instead of a dead feature.
  */
-async function pickAvdPort() {
+async function pickAvdPort(want) {
   for (const candidate of AVD_PORT_CANDIDATES) {
-    if (await avdManagerUp(candidate)) { avdPort = candidate; return candidate; }
+    if (!(await avdManagerUp(candidate))) continue;
+    const info = await avdManagerInfo(candidate);
+    if (!want || (info && info.build === want)) { avdPort = candidate; return candidate; }
+    output.appendLine(`AVD manager on ${candidate} is a stale build (${(info && info.build) || 'unknown'}) - replacing it`);
+    killProcessByPid((info && info.pid) || listenerPid(candidate), 'AVD manager');
+    if (!(await waitPortFree(candidate))) {
+      output.appendLine(`AVD manager on ${candidate} still holds its port - trying another`);
+      continue;
+    }
+    avdPort = candidate;
+    return candidate;
   }
   for (const candidate of AVD_PORT_CANDIDATES) {
     if (await portBindable(candidate)) { avdPort = candidate; return candidate; }
@@ -225,17 +312,31 @@ async function pickAvdPort() {
 // on its own told the user nothing about what to do next.
 let avdStartError = '';
 
+/** Ask the AVD manager which build it is. Null when it cannot say. */
+async function avdManagerInfo(port = avdPort) {
+  try {
+    const res = await fetch(`http://${HOST}:${port}/build`, {
+      signal: AbortSignal.timeout(700),
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 async function startAvdManager() {
   if (unsupportedPlatform()) return false;
-  if (await avdManagerUp()) return true;
   const script = findAvdScript();
   if (!script) {
     output.appendLine('avd.ps1 not found - AVD controls unavailable');
     return false;
   }
+  const want = scriptBuild(script);
   // Once the mirror is serving, the port is baked into the page it serves, so it
   // must not move underneath it; only choose while nothing is being served.
-  const port = serverProc ? avdPort : await pickAvdPort();
+  const port = serverProc ? avdPort : await pickAvdPort(want);
   if (!port) {
     avdStartError =
       `the AVD manager has no usable port (tried ${AVD_PORT_CANDIDATES.join(', ')})`;
@@ -243,6 +344,19 @@ async function startAvdManager() {
     return false;
   }
   avdPort = port;
+  if (await avdManagerUp()) {
+    const info = await avdManagerInfo();
+    if (!want || (info && info.build === want)) return true;
+    // Same trap as the mirror server, and the reason a start from the AVDs list
+    // can look successful while an older manager does the work.
+    output.appendLine(`AVD manager is a stale build (${(info && info.build) || 'unknown'}, expected ${want}) - replacing it`);
+    killProcessByPid((info && info.pid) || listenerPid(avdPort), 'AVD manager');
+    if (!(await waitPortFree(avdPort))) {
+      avdStartError = 'a stale AVD manager is still holding its port - reload the window to finish replacing it';
+      output.appendLine(avdStartError);
+      return false;
+    }
+  }
   try {
     avdProc = spawn(
       psExe(),
@@ -410,8 +524,30 @@ async function startServer() {
   if (starting) return;
   if (unsupportedPlatform()) { warnUnsupportedPlatform(); return; }
   if (await isUp()) {
-    output.appendLine('mirror server already listening');
-    return;
+    const script = findMirrorScript();
+    const want = script ? scriptBuild(script) : null;
+    if (!want) {
+      output.appendLine('cannot read scripts/mirror.ps1 - leaving the running server alone');
+      return;
+    }
+    const info = await serverInfo();
+    const have = info && info.build;
+    if (have === want) {
+      output.appendLine('mirror server already listening');
+      return;
+    }
+    // No /build at all means the process predates the handshake, which is the
+    // case that made "rebuild and reinstall" look like a no-op: the new menu ran
+    // against the old server. Replace it rather than adopt it.
+    output.appendLine(`mirror server is a stale build (${have || 'unknown'}, expected ${want}) - replacing it`);
+    killProcessByPid((info && info.pid) || listenerPid(PORT), 'mirror server');
+    for (let tries = 0; tries < 20 && await isUp(); tries++) {
+      await new Promise(r => setTimeout(r, 150));
+    }
+    if (await isUp()) {
+      output.appendLine('the stale server is still holding the port - reload the window to finish replacing it');
+      return;
+    }
   }
 
   starting = true;
@@ -573,6 +709,13 @@ function mirrorAvd() {
 const displayContext = {};
 for (const key of DISPLAY_KEYS) { displayContext[key] = null; }
 
+// The emulator window's own parking spot. Unlike the surfaces this is not derived
+// from anything we own - the server moves the window, and the mirror page has a
+// switch that moves it too - so it is polled (see syncEmulatorHidden) and only
+// remembered to keep setContext from firing on every render.
+let emulatorHidden = false;
+let emulatorStateBusy = false;
+
 /**
  * Is our panel surface on screen?
  *
@@ -616,6 +759,10 @@ function syncDisplay() {
       vscode.commands.executeCommand('setContext', `avdMirror.shown.${target}`, shown);
     }
   }
+  // The emulator window's state lives on the server, so it has to be asked for.
+  // Deliberately not awaited: the tree renders from what is known now, and the
+  // answer repaints the menu when it lands.
+  syncEmulatorHidden();
 }
 
 /** Create or reveal the mirror as an editor tab. */
@@ -1306,6 +1453,12 @@ async function startAvd(arg) {
         if (!st) continue;
         if (st.status === 'running') {
           vscode.window.setStatusBarMessage(`AVD Mirror: ${target} running`);
+          // A fresh emulator window comes up on screen. Asking the server about it
+          // now both repaints the menu and makes the server park it again if the
+          // user had hidden the previous window - that request is the only thing
+          // running when nothing is capturing.
+          syncEmulatorHidden();
+          if (avdTreeRef) avdTreeRef.refresh();
           return;
         }
         if (st.status === 'stopped') {
@@ -1380,11 +1533,17 @@ async function stopAvd(force) {
  * surface, so a hidden (SW_HIDE) or minimized window produces no frames at all.
  * The server parks it just outside the virtual screen instead - out of sight,
  * and still captured at full rate.
+ *
+ * `mode` is true (hide), false (show) or 'toggle' (the palette command, which
+ * has no state to read first). The result is authoritative: whatever the server
+ * reports becomes the state the row menu is painted from, so a stale guess
+ * cannot leave "Show" on a window that is already back.
  */
-async function toggleHide() {
+async function moveEmulatorWindow(mode) {
   let body;
   try {
-    const res = await fetch(`http://${HOST}:${PORT}/window?hidden=toggle`, { cache: 'no-store' });
+    const q = mode === 'toggle' ? 'toggle' : (mode ? '1' : '0');
+    const res = await fetch(`http://${HOST}:${PORT}/window?hidden=${q}`, { cache: 'no-store' });
     body = await res.json();
   } catch (e) {
     vscode.window.showErrorMessage(
@@ -1394,18 +1553,49 @@ async function toggleHide() {
   }
   if (!body.ok) {
     if (body.state === 'no-emulator') {
+      setEmulatorHidden(false);
       vscode.window.setStatusBarMessage('AVD Mirror: no emulator window to move', 3000);
     } else {
       vscode.window.showWarningMessage(`AVD Mirror: cannot move the emulator window (${body.state})`);
     }
     return;
   }
+  setEmulatorHidden(!!body.hidden);
   vscode.window.setStatusBarMessage(
     body.hidden
       ? 'AVD Mirror: emulator window hidden - still mirroring'
       : 'AVD Mirror: emulator window restored',
     4000
   );
+}
+
+/** Remember whether the emulator window is parked, and repaint the row menu. */
+function setEmulatorHidden(hidden) {
+  if (emulatorHidden === hidden) return;
+  emulatorHidden = hidden;
+  vscode.commands.executeCommand('setContext', 'avdMirror.emulatorHidden', hidden);
+}
+
+/**
+ * Ask the server where the emulator window is, before the tree renders.
+ *
+ * The page has its own hide switch, so this cannot be remembered: the window can
+ * be parked or restored without the extension being told. Cheap enough for the
+ * 3 s poll (one loopback GET, the same one the page makes), and a dead server
+ * just leaves the last known state alone.
+ */
+async function syncEmulatorHidden() {
+  if (emulatorStateBusy) return;
+  emulatorStateBusy = true;
+  try {
+    const res = await fetch(`http://${HOST}:${PORT}/window?state=1`, { cache: 'no-store' });
+    const body = await res.json();
+    setEmulatorHidden(body.state === 'no-emulator' ? false : !!body.hidden);
+  } catch (e) {
+    // Server not up (or mid-restart): keep whatever we last knew.
+  } finally {
+    emulatorStateBusy = false;
+  }
 }
 
 function activate(context) {
@@ -1420,6 +1610,11 @@ function activate(context) {
   const avdTree = new AvdTreeProvider();
   avdTreeRef = avdTree;
   context.subscriptions.push({ dispose: () => avdTree.stop() });
+
+  // Define the gate the emulator's hide/show pair reads. An unset context key
+  // matches `!key` but not `key`, which would silently drop the "Show" entry
+  // until the first poll answers.
+  vscode.commands.executeCommand('setContext', 'avdMirror.emulatorHidden', false);
 
   // The status bar entry point. A Panel container gets no Activity Bar icon, so
   // without this the only way back to the mirror once the panel is closed is the
@@ -1494,7 +1689,13 @@ function activate(context) {
       setTimeout(startServer, 600);
     }),
     vscode.commands.registerCommand('avdMirror.reload', () => provider.reload()),
-    vscode.commands.registerCommand('avdMirror.toggleHide', toggleHide),
+    // The emulator window follows the same hide/show-as-two-entries rule as the
+    // surfaces: the row menu lists only the direction that applies, gated on
+    // avdMirror.emulatorHidden. The palette keeps one toggle, because a flat list
+    // has no row to read the state from.
+    vscode.commands.registerCommand('avdMirror.hideEmulatorWindow', () => moveEmulatorWindow(true)),
+    vscode.commands.registerCommand('avdMirror.showEmulatorWindow', () => moveEmulatorWindow(false)),
+    vscode.commands.registerCommand('avdMirror.toggleHide', () => moveEmulatorWindow('toggle')),
     output
   );
 }

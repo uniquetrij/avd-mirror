@@ -81,16 +81,26 @@ installed VSIX.
    - `AVD Mirror: Choose Where to Show` (Command Palette) offers the same
      switches for the current AVD as one multi-select, so "panel and browser, but
      no editor tab" is a state you can hold.
+   - The same menu carries **Hide Emulator Window** (or **Show Emulator Window**
+     once it is parked), so the real emulator can be taken off the desktop
+     without leaving the AVD row. It is offered only on a running AVD, because a
+     stopped one has no window to move. See [Hiding the emulator
+     window](#hiding-the-emulator-window).
 4. Full height is one click away — the `⤢` action in the Screen tab's title bar,
    or `AVD Mirror: Open Full Screen (Editor Tab)`, opens the same mirror as an
    editor tab.
 5. Command Palette → `AVD Mirror:` for Open Panel / Choose Where to Show / Start /
    Stop / Restart / Reload.
 
-Server logs go to the **AVD Mirror** output channel. If the **Embedded Browser**
-tab ever shows only a message that the mirror page has not loaded, run
-`AVD Mirror: Restart Server` and reopen the tab: the tab is a frame around the
-running server, and a server started by an older version can outlive a reload.
+Server logs go to the **AVD Mirror** output channel. A server left behind by an
+older version of the extension is replaced automatically: `mirror.ps1` and
+`avd.ps1` report a hash of the script they actually loaded on `/build`, the
+extension compares it with the copy it ships, and a server whose hash differs — or
+which has no `/build` at all, and so predates the handshake — is stopped and
+started again from the current build. Before that handshake existed, an old
+server kept serving old capture and window code behind a new menu, so a rebuild
+looked like it had done nothing. The output channel names the case when it
+happens (`mirror server is a stale build ... - replacing it`).
 
 If the **AVDs** view says the manager could not start, the output channel names
 the port it tried: ports 8779, then 8781–8783. A port can be left behind by a
@@ -103,10 +113,13 @@ embeds it.
 
 ### Hiding the emulator window
 
-The **Hide** button in the mirror's toolbar (or `AVD Mirror: Hide / Show Emulator
-Window` from the Command Palette) takes the emulator off the desktop completely,
-and the mirror keeps running at full rate; **Show** puts it back exactly where it
-was.
+The **Hide** button in the mirror's toolbar, the **Hide Emulator Window** entry in
+an AVD's right-click menu, or `AVD Mirror: Hide / Show Emulator Window` from the
+Command Palette takes the emulator off the desktop completely, and the mirror
+keeps running at full rate; **Show** puts it back exactly where it was. The row
+menu lists only the direction that applies — **Hide** while the window is on the
+desktop, **Show** once it is parked — because it reads the window's real state
+from the server rather than remembering what the extension last asked for.
 
 "Hiding" is three changes to the window, none of which touches the DWM surface
 the capture reads (measured: frames keep arriving with all three applied):
@@ -124,7 +137,38 @@ frames in 3 s hidden, ~53 fps parked). Minimizing is therefore also treated as
 the same two shell changes.
 
 Since the parked window has no taskbar button and no Alt-Tab entry, the only way
-back is **Show** in the mirror toolbar or the Command Palette command.
+back is **Show** in the mirror toolbar, the row menu, or the Command Palette
+command.
+
+The parked state is remembered, in
+`%LOCALAPPDATA%\avd-mirror\window.json`:
+
+```json
+{"parked":true,"l":116,"t":125,"r":625,"b":1210}
+```
+
+So it survives the things that used to lose it:
+
+| Restart | Result |
+| --- | --- |
+| Reload VS Code / the extension | state re-read from the server, menu still offers **Show** |
+| `Restart Server` | window stays parked, and **Show** still restores its position |
+| Stop AVD → Start (or reboot) | the new emulator window is parked on sight |
+
+`l/t/r/b` is the last on-screen rect. It used to be stashed in the server
+process's memory, so after a restart **Show** reported success without moving
+any window — the one state the user could not get out of, since the parked
+window has no shell entry left to click.
+
+`parked` is the user's *choice*, not a note of where the window was: while it is
+true the server puts the window back off-screen whenever it finds it on the
+desktop, and only **Show** clears it. This matters because a fresh emulator
+creates its window on screen *and then re-asserts that position itself* when the
+guest finishes booting. Treating "the window is on screen" as "the user wants it
+there" made a hide last about a second: the window came back onto the desktop,
+behind everything, with its taskbar entry already deleted — visible only until
+another window covered it, and with the row menu offering **Hide** because the
+server reported what it saw rather than what was asked for.
 
 ## What the extension does and does not do
 

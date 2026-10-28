@@ -38,6 +38,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Identify the exact script this process loaded, so the extension can tell a
+# server left over from an older build apart from the one it ships. Without this
+# a stale server keeps serving last build's page, capture and window code while
+# the extension's new menu sits on top of it - silent, because /gsize says "up"
+# either way.
+$script:BuildId = ''
+try {
+  $script:BuildId = (Get-FileHash -Algorithm SHA256 -LiteralPath $PSCommandPath).Hash.Substring(0, 12).ToLowerInvariant()
+} catch { }
+
 # --- locate the emulator window ---------------------------------------------
 # The AVD the user picked in the extension's AVD list, shared with avd.ps1. Kept
 # as a plain file so both scripts agree on it without a shared process.
@@ -109,6 +119,13 @@ $script:EmuProc = $qemu
 $script:EmuHwnd = $hwnd
 $script:ConsolePort = 5554
 $script:EmuLost = $false
+
+# Where the emulator window was last on screen, and whether the user parked it.
+# Kept on disk because both facts used to live in the process: `Restart Server`
+# then left the window parked while "Show" reported "shown" without moving it,
+# and a restarted emulator came back on screen with the preference forgotten.
+# LOCALAPPDATA, so it outlives a checkout, a rebuild and a VS Code update.
+$script:WindowStatePath = Join-Path $env:LOCALAPPDATA 'avd-mirror\window.json'
 
 # --- adb + emulator console --------------------------------------------------
 # Touch is injected through the emulator console ("event send") instead of
@@ -408,6 +425,10 @@ function Update-EmulatorTarget {
   $script:EmuHwnd = $p.MainWindowHandle
   $script:EmuLost = $false
 
+  # A freshly started emulator arrives on screen. If the user had parked the last
+  # one, park this one too - that is what "maintained across restarts" means.
+  try { [void][EmuMirrorWin]::Resume($script:EmuHwnd) } catch { }
+
   # The console port follows the new emulator's adb port, and the old console
   # connection belongs to the process that just died.
   Close-Console
@@ -702,6 +723,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 public static class EmuMirrorWin
@@ -770,7 +792,7 @@ public static class EmuMirrorWin
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         bool off = r.R <= vx || r.L >= vx + vw || r.B <= vy || r.T >= vy + vh;
-        if (!off) { lastNormal = r; haveLast = true; sawFgOther = false; return; }
+        if (!off) { lastNormal = r; haveLast = true; sawFgOther = false; EnforceParked(hwnd); return; }
         if (GetForegroundWindow() != hwnd) { sawFgOther = true; return; }
         if (haveLast && sawFgOther)
         {
@@ -779,6 +801,8 @@ public static class EmuMirrorWin
                          SWP_NOZORDER | SWP_NOACTIVATE);
             Stealth(hwnd, false);                    // back on screen, back in the shell
             sawFgOther = false;
+            // Brought back by hand, so it is not the state to resume.
+            ParkState(false, lastNormal, true);
         }
     }
 
@@ -793,6 +817,8 @@ public static class EmuMirrorWin
         if (!GetWindowRect(hwnd, out r)) return;
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
         int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        if (!stateLoaded) LoadState();
+        ParkState(parkedSaved, r, true);  // a minimized window is parked too: resume it parked
         SetWindowPos(hwnd, IntPtr.Zero, vx + vw + 100, 200,
                      r.R - r.L, r.B - r.T, SWP_NOZORDER | SWP_NOACTIVATE);
         Stealth(hwnd, true);
@@ -808,6 +834,94 @@ public static class EmuMirrorWin
     // the only way to get it out of sight and still capture it - measured at
     // ~53 fps while parked. So "hide" means off-screen, never SW_HIDE.
     static RECT stashRect; static bool haveStash;
+
+    // --- parked state on disk ------------------------------------------------
+    // The stash above dies with the process, which made two ordinary restarts
+    // lose the window: `Restart Server` left it parked but "Show" returned
+    // "shown" without moving it (the rect was gone), and a fresh emulator came
+    // back on screen because nothing remembered the user had parked the old one.
+    // So the last on-screen rect and the parked flag live in a small file that
+    // both paths read back. Written only on a real change, never per frame.
+    public static string StatePath = "";
+    static RECT savedRect; static bool haveSaved;
+    static bool parkedSaved; static bool stateLoaded;
+
+    static void ParkState(bool parked, RECT r, bool useRect)
+    {
+        if (!stateLoaded) LoadState();
+        if (parked == parkedSaved && (!useRect || (haveSaved && r.L == savedRect.L && r.T == savedRect.T && r.R == savedRect.R && r.B == savedRect.B))) return;
+        parkedSaved = parked;
+        if (useRect) { savedRect = r; haveSaved = true; }
+        if (string.IsNullOrEmpty(StatePath)) return;
+        try
+        {
+            var dir = Path.GetDirectoryName(StatePath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            RECT o = haveSaved ? savedRect : new RECT { L = 0, T = 0, R = 0, B = 0 };
+            File.WriteAllText(StatePath,
+                "{\"parked\":" + (parked ? "true" : "false") +
+                ",\"l\":" + o.L + ",\"t\":" + o.T + ",\"r\":" + o.R + ",\"b\":" + o.B + "}\n");
+        }
+        catch { }
+    }
+
+    static void LoadState()
+    {
+        try
+        {
+            stateLoaded = true;
+            parkedSaved = false;
+            if (string.IsNullOrEmpty(StatePath) || !File.Exists(StatePath)) return;
+            string t = File.ReadAllText(StatePath);
+            var b = Regex.Match(t, "\"parked\"\\s*:\\s*(true|false)");
+            if (b.Success) parkedSaved = b.Groups[1].Value == "true";
+            var m = Regex.Match(t, "\"l\"\\s*:\\s*(-?\\d+)\\s*,\\s*\"t\"\\s*:\\s*(-?\\d+)\\s*,\\s*\"r\"\\s*:\\s*(-?\\d+)\\s*,\\s*\"b\"\\s*:\\s*(-?\\d+)");
+            if (m.Success)
+            {
+                savedRect = new RECT
+                {
+                    L = int.Parse(m.Groups[1].Value), T = int.Parse(m.Groups[2].Value),
+                    R = int.Parse(m.Groups[3].Value), B = int.Parse(m.Groups[4].Value),
+                };
+                haveSaved = savedRect.R > savedRect.L && savedRect.B > savedRect.T;
+            }
+        }
+        catch { parkedSaved = false; }
+    }
+
+    /// Resume the parked flag for a window that was just adopted (server start, or
+    /// the emulator replaced under us). A new window has its own rect, so the old
+    /// stash is dropped and the fresh one is what gets remembered.
+    public static string Resume(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return "no-emulator";
+        haveStash = false;
+        LoadState();
+        if (!parkedSaved) return "shown";
+        return SetHidden(hwnd, true);
+    }
+
+    /// Park the window again when the user wants it hidden but it is on screen.
+    ///
+    /// The parked flag is the user's *choice*, not an observation of where the
+    /// window happens to be. A freshly started emulator creates its window on
+    /// screen and moves it back there itself once the guest finishes booting, so
+    /// "this window is on screen" must not be read as "the user wants it there".
+    /// It was, and a hide lasted about a second: the window came back onto the
+    /// desktop behind everything, with its taskbar entry already deleted, while
+    /// /window answered "shown" - visible only until another window covered it.
+    /// Only an explicit show (SetHidden with hide=$false) clears the choice.
+    public static string EnforceParked(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return "no-emulator";
+        if (!stateLoaded) LoadState();
+        if (!parkedSaved) return "shown";
+        SetThreadDpiAwarenessContext(new IntPtr(-4));
+        RECT r;
+        if (!GetWindowRect(hwnd, out r)) return "no-emulator";
+        if (OffScreen(r)) return "hidden";
+        return SetHidden(hwnd, true);
+    }
 
     static bool OffScreen(RECT r)
     {
@@ -903,14 +1017,31 @@ public static class EmuMirrorWin
                                   SWP_NOZORDER | SWP_NOACTIVATE)) return "failed:SetWindowPos";
                 Stealth(hwnd, true);
                 sawFgOther = (GetForegroundWindow() != hwnd);
+                // Remember the on-screen rect, not the parking spot: that is what
+                // "Show" needs, and it has to outlive this process.
+                ParkState(true, stashRect, haveStash);
                 return "hidden";
             }
             Stealth(hwnd, false);                    // undo it even if we cannot re-park
             sawFgOther = false;
-            if (!haveStash) return "shown";          // nothing was hidden by this process
-            if (!SetWindowPos(hwnd, IntPtr.Zero, stashRect.L, stashRect.T,
-                              stashRect.R - stashRect.L, stashRect.B - stashRect.T,
+            RECT target = haveStash ? stashRect : savedRect;
+            bool canRestore = haveStash || (haveSaved && savedRect.R > savedRect.L && savedRect.B > savedRect.T);
+            // A saved rect on a monitor that is no longer attached would restore
+            // the window to nowhere: park it somewhere visible instead.
+            if (canRestore && (target.R - target.L <= 0 || target.B - target.T <= 0 || OffScreen(target))) canRestore = false;
+            if (!canRestore)
+            {
+                // Nothing sensible to restore to - a first run that finds the
+                // window parked by somebody else. Put it at a visible default
+                // rather than reporting "shown" over an off-screen window, which
+                // is what left it unreachable.
+                int dx = GetSystemMetrics(SM_XVIRTUALSCREEN) + 80, dy = GetSystemMetrics(SM_YVIRTUALSCREEN) + 80;
+                target = new RECT { L = dx, T = dy, R = dx + w, B = dy + h };
+            }
+            if (!SetWindowPos(hwnd, IntPtr.Zero, target.L, target.T,
+                              target.R - target.L, target.B - target.T,
                               SWP_NOZORDER | SWP_NOACTIVATE)) return "failed:SetWindowPos";
+            ParkState(false, target, true);
             return "shown";
         }
         catch (Exception ex) { return "failed:" + ex.GetType().Name; }
@@ -1065,6 +1196,18 @@ public static class EmuMirrorWin
 }
 '@
 Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Drawing
+[EmuMirrorWin]::StatePath = $script:WindowStatePath
+
+# Resume the parked state the last run left behind: a server restart that comes
+# back to a hidden window should keep it hidden (and, more importantly, able to
+# come back - the rect is what "Show" was missing).
+try {
+  $resumed = [EmuMirrorWin]::Resume($script:EmuHwnd)
+  if ($resumed -eq 'hidden') {
+    [Console]::Out.WriteLine('WINDOW_RESUMED_HIDDEN - the emulator was parked when the server last ran')
+    [Console]::Out.Flush()
+  }
+} catch { }
 
 # --- page served at / --------------------------------------------------------
 $html = @'
@@ -2429,6 +2572,13 @@ while ($true) {
           if (Get-Process wgccap -ErrorAction SilentlyContinue) { $cap = 1 }
           Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($reply + ':' + $cap))
         }
+    elseif ($path -like '/build*') {
+      # Which script is actually running. The extension hashes the copy it ships
+      # and compares; a mismatch means this process predates the extension and
+      # has to be replaced (see startServer()).
+      $body = '{"build":"' + $script:BuildId + '","pid":' + $PID + '}'
+      Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
+    }
     elseif ($path -like '/window*') {
       # /window?hidden=1|0|toggle -> park the emulator window just outside the
       # virtual screen (out of sight, still captured) or put it back;
@@ -2440,6 +2590,9 @@ while ($true) {
       $ok = $true
       try {
         if ($p.ContainsKey('state')) {
+          # Asking for the state also re-parks a window the emulator put back on
+          # screen: this poll is the only thing running when nothing is capturing.
+          [void][EmuMirrorWin]::EnforceParked($script:EmuHwnd)
           $state = [EmuMirrorWin]::HiddenState($script:EmuHwnd)
         }
         else {

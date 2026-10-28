@@ -2,6 +2,8 @@
 // in the AVD tree view / commands show up here instead of in the extension host.
 const path = require('path');
 const Module = require('module');
+const fs = require('fs');
+const crypto = require('crypto');
 
 const calls = [];
 const panels = [];
@@ -148,6 +150,28 @@ const ext = require('./extension.js');
   // server, and on a machine where one is running it would move the user's real
   // emulator window. Registration is the part the harness can check safely.
   console.log('has toggleHide:', !!run('avdMirror.toggleHide'));
+  console.log('has hideEmulatorWindow:', !!run('avdMirror.hideEmulatorWindow'));
+  console.log('has showEmulatorWindow:', !!run('avdMirror.showEmulatorWindow'));
+
+  // The emulator switch is the only command that moves a real window, so it runs
+  // only in the direction that is already true: asking the server to "show" a
+  // window it reports as shown is a no-op on screen, and still proves the round
+  // trip, the answer being read back and the message path.
+  const win = await fetch('http://127.0.0.1:8777/window?state=1', { cache: 'no-store' })
+    .then(r => r.json()).catch(() => null);
+  if (win && win.state === 'shown') {
+    const errsBefore = calls.filter(c => c[0] === 'showErrorMessage').length;
+    await call('avdMirror.showEmulatorWindow');
+    if (calls.filter(c => c[0] === 'showErrorMessage').length > errsBefore) {
+      failures.push('showEmulatorWindow: errored against a live server');
+    }
+    const msg = calls.filter(c => c[0] === 'setStatusBarMessage').pop();
+    if (!msg || !/restored/.test(String(msg[1]))) {
+      failures.push(`showEmulatorWindow: no "restored" message (${msg && msg[1]})`);
+    }
+  } else {
+    console.log('showEmulatorWindow: skipped - server reports', win ? win.state : 'no answer');
+  }
 
   // Argument shapes. VS Code hands different things to the same command
   // depending on where it was invoked from, and passing that straight through
@@ -294,6 +318,27 @@ const ext = require('./extension.js');
         failures.push(`inline strip should hold only start/stop, has ${inlineStrip.map(m => m.command).join(', ')}`);
       }
 
+      // The emulator's own window is a show/hide pair in the same section as the
+      // surfaces: the row menu lists only the direction that applies, so the pair
+      // must be gated on its own state key, and only a running AVD has a window
+      // to move.
+      const emu = [
+        ['avdMirror.hideEmulatorWindow', /!avdMirror\.emulatorHidden/, '$(eye-closed)', 'not-yet-hidden'],
+        ['avdMirror.showEmulatorWindow', /(^|[^!])avdMirror\.emulatorHidden/, '$(eye)', 'hidden'],
+      ];
+      for (const [cmd, gate, glyph, side] of emu) {
+        const m = itemMenu.find(x => x.command === cmd);
+        if (!m) { failures.push(`${cmd}: not offered on the row`); continue; }
+        if (m.group !== '2_display@5') failures.push(`${cmd}: expected group 2_display@5, got ${m.group}`);
+        if (!/viewItem == avdRunning/.test(m.when || '')) failures.push(`${cmd}: offered on an AVD with no window (${m.when})`);
+        if (!gate.test(m.when || '')) failures.push(`${cmd}: not gated on the ${side} state (${m.when})`);
+        const declared = (pkg.contributes.commands || []).find(c => c.command === cmd);
+        if (!declared || declared.icon !== glyph) failures.push(`${cmd}: icon ${declared && declared.icon} is not ${glyph}`);
+        const palette = (pkg.contributes.menus.commandPalette || []).find(x => x.command === cmd);
+        if (!palette || palette.when !== 'false') failures.push(`${cmd}: listed in the palette - the state-aware pair belongs on a row, the palette keeps the toggle`);
+      }
+      if (!itemMenu.some(m => m.command === 'avdMirror.hideEmulatorWindow')) failures.push('the row menu lost the emulator window switch');
+
       // Regression: the panel switch reported "hidden" whenever the Screen view
       // was not the active tab - i.e. every time the user could actually see the
       // switch - so flipping it looked like nothing happened. Both views share
@@ -367,6 +412,51 @@ const ext = require('./extension.js');
     }
   }
 
+  // A server left behind by an older build answers /gsize exactly like a current
+  // one, which is how "rebuild and reinstall" looked like a no-op: the new menu
+  // ran against old capture and window code. Both sides hash the script and the
+  // extension replaces a server whose hash differs - including one that has no
+  // /build at all, which is by definition older than the handshake.
+  const buildHash = (file) =>
+    crypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname, file))).digest('hex').slice(0, 12);
+  for (const [label, file] of [['mirror', 'scripts/mirror.ps1'], ['AVD manager', 'scripts/avd.ps1']]) {
+    const text = fs.readFileSync(path.join(__dirname, file), 'utf8');
+    if (!/\$script:BuildId\s*=/.test(text)) failures.push(`${label}: no build id - a stale process would stay undetectable`);
+    if (!/\$path -like '\/build\*'/.test(text)) failures.push(`${label}: no /build endpoint to report it`);
+  }
+  const extText = fs.readFileSync(path.join(__dirname, 'extension.js'), 'utf8');
+  if (!/function scriptBuild\(/.test(extText)) failures.push('extension.js: no scriptBuild() to compare against');
+  if (!/function listenerPid\(/.test(extText)) {
+    failures.push('extension.js: no listenerPid() - a server older than the handshake reports no pid, so nothing could stop it');
+  }
+  if (!/killProcessByPid\(\(info && info\.pid\) \|\| listenerPid\(PORT\), 'mirror server'\)/.test(extText)) {
+    failures.push('startServer: adopts a server of another build instead of replacing it');
+  }
+  if (!/killProcessByPid\(\(info && info\.pid\) \|\| listenerPid\(avdPort\), 'AVD manager'\)/.test(extText)) {
+    failures.push('startAvdManager: adopts a manager of another build instead of replacing it');
+  }
+  if (!/if \(!want \|\| \(info && info\.build === want\)\) \{ avdPort = candidate; return candidate; \}/.test(extText)) {
+    failures.push('pickAvdPort: adopts whatever answers on a candidate port without checking its build');
+  }
+
+  // And the live server, after activation had its chance to replace a stale one.
+  // Silence is not a failure (the server may simply not be started yet), but a
+  // wrong build is: that is the state where nothing new is actually running.
+  let live = null;
+  for (let tries = 0; tries < 60 && !live; tries++) {
+    live = await fetch('http://127.0.0.1:8777/build', { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null)).catch(() => null);
+    if (!live) await new Promise(r => setTimeout(r, 500));
+  }
+  if (!live) {
+    console.log('mirror server build: no /build answer (not running, or predates the handshake)');
+  } else {
+    console.log(`mirror server build: ${live.build} pid ${live.pid} (repo: ${buildHash('scripts/mirror.ps1')})`);
+    if (live.build !== buildHash('scripts/mirror.ps1')) {
+      failures.push(`mirror server: running build ${live.build}, not the one in this checkout`);
+    }
+  }
+
   // And confirm the manager answers, which is what the tree reads. Its port is a
   // preference: 8779 when it is usable, otherwise the next free candidate, so a
   // port left behind by a dead process cannot masquerade as "no AVDs".
@@ -380,6 +470,10 @@ const ext = require('./extension.js');
   }
   console.log('manager health:', managerPort ? `ok on ${managerPort}` : health);
   if (!managerPort) failures.push('AVD manager: no candidate port answered');
+  if (process.env.HARNESS_VERBOSE) {
+    console.log('--- AVD Mirror output channel ---');
+    for (const c of calls) if (c[0] === 'appendLine') console.log('  |', c[1]);
+  }
   console.log('failures:', failures.length ? failures.join(' | ') : 'none');
   if (failures.length) { console.log('HARNESS FAILED'); process.exit(1); }
   ext.deactivate();
