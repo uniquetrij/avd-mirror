@@ -230,26 +230,30 @@ const ext = require('./extension.js');
 
       // The menu is what the user clicks, so check the contributions: the glyphs
       // are what make a switch look on or off, and a pair with one half missing
-      // is an icon that never changes.
+      // is an icon that never changes. The switches live in the row menu now,
+      // not the inline strip, so the off/on pair is what carries their state.
       const pkg = require(path.join(__dirname, 'package.json'));
-      const entries = (pkg.contributes.menus['view/item/context'] || []).filter(m => /^inline@[2-9]/.test(m.group || ''));
+      const itemMenuAll = pkg.contributes.menus['view/item/context'] || [];
+      const entries = itemMenuAll.filter(m => /^2_display@/.test(m.group || ''));
       const icon = {};
       for (const c of pkg.contributes.commands || []) if (c.icon) icon[c.command] = c.icon;
       const want = [
-        ['panel', 'Panel', 2, 'layout-panel', 'layout-panel-off'],
-        ['editor', 'Editor', 3, 'screen-full', 'screen-normal'],
-        ['browser', 'Browser', 4, 'globe', 'circle-slash'],
-        ['embedded', 'Embedded', 5, 'browser', 'preview'],
+        ['panel', 'Panel', 1, 'layout-panel', 'layout-panel-off'],
+        ['editor', 'Editor', 2, 'screen-full', 'screen-normal'],
+        ['browser', 'Browser', 3, 'globe', 'circle-slash'],
+        ['embedded', 'Embedded', 4, 'browser', 'preview'],
       ];
       for (const [key, cap, group, onIcon, offIcon] of want) {
         const showId = `avdMirror.showIn${cap}`;
         const hideId = `avdMirror.hideFrom${cap}`;
         const show = entries.find(m => m.command === showId);
         const hide = entries.find(m => m.command === hideId);
-        if (!show || !hide) { failures.push(`${key}: no inline show/hide pair`); continue; }
-        if (show.group !== `inline@${group}` || hide.group !== show.group) {
+        if (!show || !hide) { failures.push(`${key}: no show/hide pair in the row menu`); continue; }
+        if (show.group !== `2_display@${group}` || hide.group !== show.group) {
           failures.push(`${key}: pair split across groups ${show.group}/${hide.group}`);
         }
+        const inline = itemMenuAll.filter(m => /^inline/.test(m.group || '') && (m.command === showId || m.command === hideId));
+        if (inline.length) failures.push(`${key}: still pinned inline (${inline[0].group}) - the switches belong in the row menu`);
         const when = (show.when || '') + ' ' + (hide.when || '');
         if (!/viewItem == avdRunningMirrored/.test(when) || !/viewItem == avdIdleMirrored/.test(when)) {
           failures.push(`${key}: not limited to the mirrored row (${when})`);
@@ -285,6 +289,10 @@ const ext = require('./extension.js');
       }
       const force = itemMenu.find(x => x.command === 'avdMirror.forceStopAvd');
       if (force && /inline/.test(force.group || '')) failures.push(`forceStopAvd: inline (${force.group}) - too easy to hit next to Stop`);
+      const inlineStrip = itemMenu.filter(m => /^inline@/.test(m.group || ''));
+      if (inlineStrip.length !== 2 || inlineStrip.some(m => !/^avdMirror\.(start|stop)Avd$/.test(m.command))) {
+        failures.push(`inline strip should hold only start/stop, has ${inlineStrip.map(m => m.command).join(', ')}`);
+      }
 
       // Regression: the panel switch reported "hidden" whenever the Screen view
       // was not the active tab - i.e. every time the user could actually see the

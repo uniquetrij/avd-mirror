@@ -58,15 +58,16 @@ installed VSIX.
    ⏹ on a running one stops it, and right-click offers **Force Stop AVD** for a
    guest that ignores the request.
 3. Where the mirror appears is chosen **per AVD**. Every AVD row in the **AVDs**
-   tree carries its own switches — **Panel**, **Editor Tab**, **Browser**,
-   **Embedded Browser** — as icon actions on the right of the row, so nothing has
-   to be expanded: click one to open or close that surface for that AVD. A filled
-   glyph means the surface is on; its hollow twin means it is off, so the current
-   placement is readable without opening anything.
+   tree carries its own switches — **Show/Hide in Panel**, **Editor Tab**,
+   **Browser**, **Embedded Browser** — in the row's right-click menu (`...` or
+   right-click on the AVD), so nothing has to be expanded: pick one to open or
+   close that surface for that AVD. A filled glyph means the surface is on; its
+   hollow twin means it is off, so the current placement is readable without
+   opening anything; only the entry that matches the state is listed.
    - The mirror binds to one emulator window, so only one AVD at a time can be on
-     screen. That is why the row actions only appear on the AVD the mirror is
-     showing; asking for another AVD is refused with a message naming the AVD in
-     the way.
+     screen. That is why the row menu only offers switches on the AVD the mirror
+     is showing; asking for another AVD is refused with a message naming the AVD
+     in the way.
    - The icons follow reality: close the editor tab by hand and the glyph goes
      hollow again. **Panel** means the mirror is being drawn into the AVD Mirror
      container — either of its tabs counts, so the switch stays on while you are

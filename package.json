@@ -2,7 +2,7 @@
     "name":  "avd-mirror",
     "displayName":  "AVD Mirror",
     "description":  "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
-    "version": "0.3.32",
+    "version":  "0.3.35",
     "publisher":  "local",
     "license":  "MIT",
     "engines":  {
@@ -196,42 +196,42 @@
                                                                 {
                                                                     "command":  "avdMirror.showInPanel",
                                                                     "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 !avdMirror.shown.panel",
-                                                                    "group":  "inline@2"
+                                                                    "group":  "2_display@1"
                                                                 },
                                                                 {
                                                                     "command":  "avdMirror.hideFromPanel",
                                                                     "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 avdMirror.shown.panel",
-                                                                    "group":  "inline@2"
+                                                                    "group":  "2_display@1"
                                                                 },
                                                                 {
                                                                     "command":  "avdMirror.showInEditor",
                                                                     "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 !avdMirror.shown.editor",
-                                                                    "group":  "inline@3"
+                                                                    "group":  "2_display@2"
                                                                 },
                                                                 {
                                                                     "command":  "avdMirror.hideFromEditor",
                                                                     "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 avdMirror.shown.editor",
-                                                                    "group":  "inline@3"
+                                                                    "group":  "2_display@2"
                                                                 },
                                                                 {
                                                                     "command":  "avdMirror.showInBrowser",
                                                                     "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 !avdMirror.shown.browser",
-                                                                    "group":  "inline@4"
+                                                                    "group":  "2_display@3"
                                                                 },
                                                                 {
                                                                     "command":  "avdMirror.hideFromBrowser",
                                                                     "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 avdMirror.shown.browser",
-                                                                    "group":  "inline@4"
+                                                                    "group":  "2_display@3"
                                                                 },
                                                                 {
                                                                     "command":  "avdMirror.showInEmbedded",
                                                                     "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 !avdMirror.shown.embedded",
-                                                                    "group":  "inline@5"
+                                                                    "group":  "2_display@4"
                                                                 },
                                                                 {
                                                                     "command":  "avdMirror.hideFromEmbedded",
                                                                     "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 avdMirror.shown.embedded",
-                                                                    "group":  "inline@5"
+                                                                    "group":  "2_display@4"
                                                                 },
                                                                 {
                                                                     "command":  "avdMirror.selectAvd",
@@ -251,7 +251,7 @@
                                                                 {
                                                                     "command":  "avdMirror.forceStopAvd",
                                                                     "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunning || viewItem == avdRunningMirrored)",
-                                                                    "group":  "2_forcestop"
+                                                                    "group":  "3_forcestop"
                                                                 }
                                                             ]
                                   }
