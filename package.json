@@ -2,7 +2,7 @@
     "name":  "avd-mirror",
     "displayName":  "AVD Mirror",
     "description":  "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
-    "version": "0.3.13",
+    "version": "0.3.32",
     "publisher":  "local",
     "license":  "MIT",
     "engines":  {
@@ -83,6 +83,18 @@
                                              "icon":  "$(circle-slash)"
                                          },
                                          {
+                                             "command":  "avdMirror.showInEmbedded",
+                                             "title":  "Show Mirror in Embedded Browser",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(browser)"
+                                         },
+                                         {
+                                             "command":  "avdMirror.hideFromEmbedded",
+                                             "title":  "Hide Mirror from Embedded Browser",
+                                             "category":  "AVD Mirror",
+                                             "icon":  "$(preview)"
+                                         },
+                                         {
                                              "command":  "avdMirror.start",
                                              "title":  "Start Server",
                                              "category":  "AVD Mirror"
@@ -151,56 +163,16 @@
                                   },
                         "menus":  {
                                       "view/title":  [
-                                                         {
-                                                             "command":  "avdMirror.openInEditor",
-                                                             "when":  "view == avdMirror.view",
-                                                             "group":  "navigation@1"
-                                                         },
-                                                         {
-                                                             "command":  "avdMirror.showInPanel",
-                                                             "when":  "view == avdMirror.avds && !avdMirror.shown.panel",
-                                                             "group":  "navigation@0"
-                                                         },
-                                                         {
-                                                             "command":  "avdMirror.hideFromPanel",
-                                                             "when":  "view == avdMirror.avds && avdMirror.shown.panel",
-                                                             "group":  "navigation@0"
-                                                         },
-                                                         {
-                                                             "command":  "avdMirror.showInEditor",
-                                                             "when":  "view == avdMirror.avds && !avdMirror.shown.editor",
-                                                             "group":  "navigation@1"
-                                                         },
-                                                         {
-                                                             "command":  "avdMirror.hideFromEditor",
-                                                             "when":  "view == avdMirror.avds && avdMirror.shown.editor",
-                                                             "group":  "navigation@1"
-                                                         },
-                                                         {
-                                                             "command":  "avdMirror.showInBrowser",
-                                                             "when":  "view == avdMirror.avds && !avdMirror.shown.browser",
-                                                             "group":  "navigation@2"
-                                                         },
-                                                         {
-                                                             "command":  "avdMirror.hideFromBrowser",
-                                                             "when":  "view == avdMirror.avds && avdMirror.shown.browser",
-                                                             "group":  "navigation@2"
-                                                         },
-                                                         {
-                                                             "command":  "avdMirror.startAvd",
-                                                             "when":  "view == avdMirror.avds",
-                                                             "group":  "navigation@3"
-                                                         },
-                                                         {
-                                                             "command":  "avdMirror.stopAvd",
-                                                             "when":  "view == avdMirror.avds",
-                                                             "group":  "navigation@4"
-                                                         },
-                                                         {
-                                                             "command":  "avdMirror.refreshAvds",
-                                                             "when":  "view == avdMirror.avds",
-                                                             "group":  "navigation@5"
-                                                         }
+                                                        {
+                                                            "command":  "avdMirror.openInEditor",
+                                                            "when":  "view == avdMirror.view",
+                                                            "group":  "navigation@1"
+                                                        },
+                                                        {
+                                                            "command":  "avdMirror.refreshAvds",
+                                                            "when":  "view == avdMirror.avds",
+                                                            "group":  "navigation@1"
+                                                        }
                                                      ],
                                       "commandPalette":  [
                                                              {
@@ -214,18 +186,72 @@
                                                              {
                                                                  "command":  "avdMirror.hideFromBrowser",
                                                                  "when":  "false"
+                                                             },
+                                                             {
+                                                                 "command":  "avdMirror.hideFromEmbedded",
+                                                                 "when":  "false"
                                                              }
                                                          ],
                                       "view/item/context":  [
                                                                 {
+                                                                    "command":  "avdMirror.showInPanel",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 !avdMirror.shown.panel",
+                                                                    "group":  "inline@2"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.hideFromPanel",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 avdMirror.shown.panel",
+                                                                    "group":  "inline@2"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.showInEditor",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 !avdMirror.shown.editor",
+                                                                    "group":  "inline@3"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.hideFromEditor",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 avdMirror.shown.editor",
+                                                                    "group":  "inline@3"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.showInBrowser",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 !avdMirror.shown.browser",
+                                                                    "group":  "inline@4"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.hideFromBrowser",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 avdMirror.shown.browser",
+                                                                    "group":  "inline@4"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.showInEmbedded",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 !avdMirror.shown.embedded",
+                                                                    "group":  "inline@5"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.hideFromEmbedded",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) \u0026\u0026 avdMirror.shown.embedded",
+                                                                    "group":  "inline@5"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.selectAvd",
+                                                                    "when":  "view == avdMirror.avds",
+                                                                    "group":  "1_select"
+                                                                },
+                                                                {
                                                                     "command":  "avdMirror.startAvd",
-                                                                    "when":  "view == avdMirror.avds \u0026\u0026 viewItem == avdIdle",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdIdle || viewItem == avdIdleMirrored)",
                                                                     "group":  "inline@1"
                                                                 },
                                                                 {
                                                                     "command":  "avdMirror.stopAvd",
-                                                                    "when":  "view == avdMirror.avds \u0026\u0026 viewItem == avdRunning",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunning || viewItem == avdRunningMirrored)",
                                                                     "group":  "inline@1"
+                                                                },
+                                                                {
+                                                                    "command":  "avdMirror.forceStopAvd",
+                                                                    "when":  "view == avdMirror.avds \u0026\u0026 (viewItem == avdRunning || viewItem == avdRunningMirrored)",
+                                                                    "group":  "2_forcestop"
                                                                 }
                                                             ]
                                   }

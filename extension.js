@@ -6,6 +6,7 @@
 
 const vscode = require('vscode');
 const { spawn } = require('child_process');
+const net = require('net');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -22,22 +23,38 @@ const AVD_REL = 'scripts/avd.ps1';
 // The AVD manager is a separate small server so the controls work whether or
 // not a mirror is running, and so the mirror page can call it cross-origin
 // exactly as it already calls wgccap on 8778.
+//
+// 8779 is the port everything is documented as using, but it is a preference,
+// not a fact: a loopback port can be left held by a dead process whose listening
+// socket the kernel has not reclaimed, and then bind fails, connect is refused,
+// and every request fails with the bare `fetch failed` - a message that says
+// nothing about which port is at fault. So the manager walks this list and takes
+// the first port it can actually use, and the mirror page is told which one that
+// is (see the -AvdPort argument below). The other entries stay clear of 8777,
+// 8778 and 8779 itself.
 const AVD_PORT = 8779;
-const AVD_URL = `http://${HOST}:${AVD_PORT}`;
+const AVD_PORT_CANDIDATES = [AVD_PORT, 8781, 8782, 8783];
+let avdPort = AVD_PORT;
+const avdUrl = () => `http://${HOST}:${avdPort}`;
 
 let serverProc = null;
 let avdProc = null;
 // The AVD tree provider, kept at module scope so deactivate() can stop its
 // polling timer even when deactivate() is called on its own.
 let avdTreeRef = null;
-// Where the mirror is on screen right now. The panel and the editor tab are read
-// back from the live view/panel instead of being remembered, so the checkboxes
-// in the AVDs view cannot claim a surface that is no longer there - a tab closed
-// by hand has to clear its own box. Only the browser is a flag: VS Code can hand
-// a URL to the default browser but has no way to close that tab again.
+// Where the mirror is on screen right now. The panel and the editor tabs are
+// read back from the live view/panel instead of being remembered, so the
+// checkboxes in the AVDs view cannot claim a surface that is no longer there - a
+// tab closed by hand has to clear its own box. Only the browser is a flag: VS
+// Code can hand a URL to the default browser but has no way to close that tab
+// again.
 let viewProvider = null;
+let avdTreeView = null;
 let editorPanel = null;
+let embeddedPanel = null;
 let browserOpened = false;
+/** Is the panel surface showing the mirror, or blank? See setDisplay(). */
+let panelMirror = true;
 let output = vscode.window.createOutputChannel('AVD Mirror');
 let starting = false;
 
@@ -152,12 +169,12 @@ function wireProc(proc, label) {
 }
 
 // --- AVD manager -------------------------------------------------------------
-// The manager is a separate server on 8779 so the AVD controls work with no
-// mirror running, and so the mirror page can reach it cross-origin.
+// The manager is a separate server on its own port so the AVD controls work with
+// no mirror running, and so the mirror page can reach it cross-origin.
 
-async function avdManagerUp() {
+async function avdManagerUp(port = avdPort) {
   try {
-    const res = await fetch(`${AVD_URL}/health`, {
+    const res = await fetch(`http://${HOST}:${port}/health`, {
       signal: AbortSignal.timeout(700),
       cache: 'no-store',
     });
@@ -167,6 +184,47 @@ async function avdManagerUp() {
   }
 }
 
+/**
+ * Will the OS let us listen on this port?
+ *
+ * This is the only question that separates "free" from "left behind by a dead
+ * process": such a port refuses connections (so a health probe cannot tell it
+ * apart from a free one) yet still fails to bind. Binding and releasing is a
+ * hair's-breadth race, and the alternative - spawning the script and watching it
+ * die on the exception - costs a process start per attempt.
+ */
+function portBindable(port) {
+  return new Promise(resolve => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.listen({ port, host: HOST, exclusive: true }, () => {
+      probe.close(() => resolve(true));
+    });
+  });
+}
+
+/**
+ * Which port the manager should use.
+ *
+ * A manager that already answers wins, so a second extension host (or a harness
+ * run) adopts the running one instead of starting a rival. Otherwise the first
+ * bindable candidate is taken, which is what makes a port left behind by a dead
+ * process an inconvenience instead of a dead feature.
+ */
+async function pickAvdPort() {
+  for (const candidate of AVD_PORT_CANDIDATES) {
+    if (await avdManagerUp(candidate)) { avdPort = candidate; return candidate; }
+  }
+  for (const candidate of AVD_PORT_CANDIDATES) {
+    if (await portBindable(candidate)) { avdPort = candidate; return candidate; }
+  }
+  return null;
+}
+
+// Why the manager is not answering, in words the tree can show. `fetch failed`
+// on its own told the user nothing about what to do next.
+let avdStartError = '';
+
 async function startAvdManager() {
   if (unsupportedPlatform()) return false;
   if (await avdManagerUp()) return true;
@@ -175,11 +233,21 @@ async function startAvdManager() {
     output.appendLine('avd.ps1 not found - AVD controls unavailable');
     return false;
   }
+  // Once the mirror is serving, the port is baked into the page it serves, so it
+  // must not move underneath it; only choose while nothing is being served.
+  const port = serverProc ? avdPort : await pickAvdPort();
+  if (!port) {
+    avdStartError =
+      `the AVD manager has no usable port (tried ${AVD_PORT_CANDIDATES.join(', ')})`;
+    output.appendLine(avdStartError);
+    return false;
+  }
+  avdPort = port;
   try {
     avdProc = spawn(
       psExe(),
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-       '-File', script, '-Port', String(AVD_PORT)],
+       '-File', script, '-Port', String(port)],
       { detached: false, windowsHide: true }
     );
     const proc = avdProc;
@@ -190,15 +258,18 @@ async function startAvdManager() {
     });
     for (let tries = 0; tries < 30; tries++) {
       await new Promise(r => setTimeout(r, 200));
-      if (await avdManagerUp()) {
-        output.appendLine('AVD manager ready');
+      if (await avdManagerUp(port)) {
+        output.appendLine(`AVD manager ready on ${port}`);
+        avdStartError = '';
         return true;
       }
     }
-    output.appendLine('AVD manager did not come up');
+    avdStartError = `the AVD manager did not answer on port ${port}`;
+    output.appendLine(avdStartError);
     return false;
   } catch (e) {
-    output.appendLine(`AVD manager start failed: ${e && e.message ? e.message : e}`);
+    avdStartError = e && e.message ? e.message : String(e);
+    output.appendLine(`AVD manager start failed: ${avdStartError}`);
     return false;
   }
 }
@@ -223,13 +294,14 @@ let avdStateError = '';
 /** Read the AVD inventory from the manager. */
 async function avdState() {
   try {
-    const res = await fetch(`${AVD_URL}/avds`, { cache: 'no-store' });
+    const res = await fetch(`${avdUrl()}/avds`, { cache: 'no-store' });
     if (!res.ok) { avdStateError = `manager replied HTTP ${res.status}`; return null; }
     const st = await res.json();
     avdStateError = '';
     return st;
   } catch (e) {
-    avdStateError = e && e.message ? e.message : String(e);
+    const why = e && e.message ? e.message : String(e);
+    avdStateError = avdStartError || `${why} (AVD manager port ${avdPort})`;
     return null;
   }
 }
@@ -237,7 +309,7 @@ async function avdState() {
 async function avdCommand(path) {
   await startAvdManager();
   try {
-    const res = await fetch(`${AVD_URL}${path}`, { method: 'POST', cache: 'no-store' });
+    const res = await fetch(`${avdUrl()}${path}`, { method: 'POST', cache: 'no-store' });
     const body = await res.json().catch(() => ({}));
     return { ok: res.ok && body.ok !== false, body };
   } catch (e) {
@@ -366,7 +438,7 @@ async function startServer() {
     serverProc = spawn(
       psExe(),
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-       '-File', script, '-Port', String(PORT)],
+       '-File', script, '-Port', String(PORT), '-AvdPort', String(avdPort)],
       { detached: false, windowsHide: true }
     );
     const proc = serverProc;
@@ -449,9 +521,10 @@ async function loadPage() {
 }
 
 // --- where the mirror is displayed ------------------------------------------
-// Three surfaces can show the mirror: the VS Code panel, an editor tab, and the
-// default browser. The AVDs view carries one checkbox per surface *under each
-// AVD*, and the three global switches live in that view's title bar.
+// Four surfaces can show the mirror: the VS Code panel, an editor tab, the
+// default browser, and an embedded browser (the live page framed inside an editor
+// tab). The AVDs view carries one checkbox per surface *under each AVD*, and the
+// global switches live in that view's title bar.
 //
 // A surface has at most one owner, because the mirror itself does: mirror.ps1
 // binds to a single emulator window, so "ai_dating in a tab and pixel_test in
@@ -463,26 +536,29 @@ async function loadPage() {
 // Ownership is derived, never remembered: a surface belongs to whichever AVD the
 // mirror is showing while it is open, so a tab closed by hand, or a different
 // emulator started, corrects itself on the next render. The browser is the one
-// exception - vscode.env.openExternal is one-way, so clearing its box only stops
-// us counting that tab as shown.
+// exception - vscode.env.openExternal is one-way, so clearing its switch only
+// stops us counting that tab as shown.
+//
+// The glyph pairs are not here: each surface is two menu entries in package.json,
+// gated on `avdMirror.shown.<key>`, so the on and off icons have to live beside
+// the commands that use them. A surface with only one half of its pair is an icon
+// that never changes, which reads as a broken switch.
 const DISPLAY_TARGETS = {
   panel: {
     label: 'Panel',
-    onIcon: 'layout-panel',
-    offIcon: 'layout-panel-off',
-    detail: 'The Screen tab in the VS Code panel.',
+    detail: 'The Screen view, wherever the AVD Mirror container lives - the panel, or either side bar if it was dragged there. Turning it off blanks that view instead of closing the part it sits in.',
   },
   editor: {
     label: 'Editor Tab',
-    onIcon: 'screen-full',
-    offIcon: 'screen-normal',
     detail: 'The mirror as a full-height editor tab, next to your code.',
   },
   browser: {
     label: 'Browser',
-    onIcon: 'globe',
-    offIcon: 'circle-slash',
     detail: `The page at ${MIRROR_URL} in your default browser. VS Code cannot close that tab again.`,
+  },
+  embedded: {
+    label: 'Embedded Browser',
+    detail: `The same page at ${MIRROR_URL}, framed inside an editor tab so it never leaves VS Code. It loads from the server rather than being copied in, so it survives what the Editor Tab inlining has to work around.`,
   },
 };
 const DISPLAY_KEYS = Object.keys(DISPLAY_TARGETS);
@@ -493,18 +569,31 @@ function mirrorAvd() {
   return st.running || st.selected || null;
 }
 
-/** Which AVD each surface is showing; null when it is closed. */
-const displayOwner = { panel: null, editor: null, browser: null };
-const displayContext = { panel: null, editor: null, browser: null };
+/** Is each surface on screen? One entry per target, read by the menu gates. */
+const displayContext = {};
+for (const key of DISPLAY_KEYS) { displayContext[key] = null; }
 
-/** A checkbox row: one surface of one AVD. */
-class DisplayItem {
-  constructor(avd, target) { this.avd = avd; this.target = target; }
+/**
+ * Is our panel surface on screen?
+ *
+ * Two facts make it up: the user's switch (`panelMirror` - off means the page is
+ * blank, not that the part is closed) and whether the container is showing at
+ * all. Both views share one container, so neither one's `visible` answers it
+ * alone: the AVDs view is visible exactly when the user is looking at these very
+ * switches, and the Screen view is visible only on its own tab. Asking only
+ * about the Screen view made the Panel switch report "hidden" while the panel
+ * was open on the AVDs tab - so flipping it appeared to do nothing, and the title
+ * bar offered "show" for something already shown.
+ */
+function panelShown() {
+  return !!panelMirror
+    && !!((avdTreeView && avdTreeView.visible) || (viewProvider && viewProvider.visible));
 }
 
 function displayShown(target) {
-  if (target === 'panel') return !!(viewProvider && viewProvider.visible);
+  if (target === 'panel') return panelShown();
   if (target === 'editor') return !!editorPanel;
+  if (target === 'embedded') return !!embeddedPanel;
   return browserOpened;
 }
 
@@ -512,17 +601,16 @@ function displayShown(target) {
  * Re-read the live surfaces before the tree renders.
  *
  * Called from getChildren, which the tree already runs on every poll and on
- * every refresh, so nothing extra ticks: the checkboxes and the title-bar icons
- * both follow whatever is true right now.
+ * every refresh, so nothing extra ticks: the row icons follow whatever is true
+ * right now.
  */
 function syncDisplay() {
-  const cur = mirrorAvd();
   for (const target of DISPLAY_KEYS) {
     const shown = displayShown(target);
-    displayOwner[target] = shown ? cur : null;
-    // Each title-bar switch is two menu entries with different icons, gated on
-    // this key: a filled glyph when the surface is on, its "off" counterpart
-    // when it is not.
+    // Each surface is two menu entries with different icons, gated on this key:
+    // a filled glyph when the surface is on, its "off" counterpart when it is
+    // not - the only way to paint state on a menu entry, whose icon is fixed per
+    // command. Cached so the 3 s poll does not churn the menu registry.
     if (displayContext[target] !== shown) {
       displayContext[target] = shown;
       vscode.commands.executeCommand('setContext', `avdMirror.shown.${target}`, shown);
@@ -552,24 +640,96 @@ function showInEditor() {
     .catch(e => output.appendLine(`editor paint: ${e && e.message ? e.message : e}`));
 }
 
+/**
+ * The page itself, framed.
+ *
+ * The Editor Tab inlines a fetched copy of the page so it can talk to the
+ * extension over postMessage. This does the opposite: it points a frame at the
+ * live document, so what you see is exactly what a browser tab would show - the
+ * page's own styles, scripts and reload behaviour included - without leaving VS
+ * Code.
+ *
+ * The frame needs two permissions that are easy to get wrong, and getting them
+ * wrong is a *silently black* tab rather than an error:
+ *   - here, `frame-src` in this page's own CSP, or the frame never starts;
+ *   - on the server, `frame-ancestors` must list `vscode-webview:` and
+ *     `vscode-file:`, because this webview sits inside two non-network documents
+ *     and `frame-ancestors *` matches only http/https/ws/wss. See Send-Bytes in
+ *     mirror.ps1.
+ * The "loading" note is the third guard: if the frame never paints, say so on
+ * screen instead of showing an empty tab.
+ */
+function embeddedHtml() {
+  const base = `http://${HOST}:${PORT}`;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${base} http://localhost:${PORT}; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<style>
+  html,body{height:100%}
+  body{margin:0;overflow:hidden;background:var(--vscode-editor-background)}
+  iframe{position:fixed;inset:0;width:100%;height:100%;border:0;background:transparent}
+  #note{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+        font:12px/1.5 var(--vscode-font-family);color:var(--vscode-descriptionForeground);
+        pointer-events:none}
+</style>
+</head>
+<body>
+<div id="note">Loading the mirror from port ${PORT}...</div>
+<iframe id="mirror" src="${base}/" title="AVD Mirror"
+        sandbox="allow-scripts allow-forms allow-same-origin allow-downloads allow-popups"></iframe>
+<script>
+  const frame = document.getElementById('mirror');
+  const note = document.getElementById('note');
+  // display, not the hidden attribute: #note sets display:flex, which beats the
+  // user-agent [hidden] rule.
+  frame.addEventListener('load', () => { note.style.display = 'none'; });
+  setTimeout(() => {
+    if (note.style.display === 'none') return;
+    note.textContent = 'The mirror page has not loaded. Run "AVD Mirror: Restart Server", then reopen this tab.';
+  }, 6000);
+</script>
+</body>
+</html>`;
+}
+
+/** Create or reveal the mirror as an embedded browser tab. */
+function showInEmbedded() {
+  if (embeddedPanel) { embeddedPanel.reveal(vscode.ViewColumn.Active); return; }
+  const panel = vscode.window.createWebviewPanel(
+    'avdMirror.embedded', 'AVD Mirror (Browser)',
+    vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true }
+  );
+  embeddedPanel = panel;
+  panel.webview.html = embeddedHtml();
+  panel.onDidDispose(() => {
+    if (embeddedPanel === panel) embeddedPanel = undefined;
+    // Keep the checkbox honest when the tab is closed from its own tab strip.
+    if (avdTreeRef) avdTreeRef.refresh();
+  });
+}
+
 /** Turn one display surface on or off. */
 async function setDisplay(target, on) {
   try {
     if (target === 'panel') {
       if (on) {
-        // Reveal first, then start: the view paints its own loading hint, and a
-        // cold start should not delay the panel appearing.
-        await vscode.commands.executeCommand('avdMirror.view.focus');
+        panelMirror = true;
+        // Focus the Screen tab when it is not the visible one: showing the mirror
+        // in the panel means bringing that tab up, and the AVDs tab this was
+        // clicked from is one click away.
+        if (!(viewProvider && viewProvider.visible)) {
+          await vscode.commands.executeCommand('avdMirror.view.focus');
+        }
         await startServer();
+        if (viewProvider && viewProvider._view) await viewProvider.paint(viewProvider._view);
       } else {
-        // There is no API to hide a single view, only the whole panel - and the
-        // AVDs view lives in that panel, so these very checkboxes disappear with
-        // it. Say where to find them again instead of leaving the user stuck.
-        await vscode.commands.executeCommand('workbench.action.closePanel');
-        vscode.window.showInformationMessage(
-          'AVD Mirror: panel hidden. The AVDs view - and the switches that bring '
-          + 'it back - live in that panel; use "AVD Mirror: Show Mirror in Panel" '
-          + 'from the Command Palette, or the status bar entry.');
+        // Blank the Screen view; do not close the part. Closing it took the AVDs
+        // view - and these very switches - with it, which is not what "off"
+        // means: the part is the user's layout, the mirror inside it is ours.
+        panelMirror = false;
+        if (viewProvider) viewProvider.showBlank();
       }
     } else if (target === 'editor') {
       // No await before opening the tab: the panel shows its "loading" hint at
@@ -594,6 +754,19 @@ async function setDisplay(target, on) {
       } else {
         browserOpened = false;
       }
+    } else if (target === 'embedded') {
+      if (on) {
+        // Same reason as the browser: a frame pointed at a port nothing is
+        // listening on is a dead tab, and it will not retry on its own.
+        await startServer();
+        showInEmbedded();
+      } else if (embeddedPanel) {
+        // Clear the reference before disposing, like the editor tab: the checkbox
+        // is rendered from it.
+        const tab = embeddedPanel;
+        embeddedPanel = undefined;
+        tab.dispose();
+      }
     }
   } catch (e) {
     const why = e && e.message ? e.message : String(e);
@@ -604,12 +777,12 @@ async function setDisplay(target, on) {
 }
 
 /**
- * One AVD's checkbox.
+ * One AVD's surface switch.
  *
- * A tick means "this AVD's mirror is on that surface", so it can only be granted
+ * "On" means "this AVD's mirror is on that surface", so it can only be granted
  * to the AVD the mirror is actually showing. Anything else is refused with the
- * reason: quietly ticking a surface that will never appear is worse than saying
- * no.
+ * reason: quietly switching on a surface that will never appear is worse than
+ * saying no.
  */
 async function setAvdDisplay(avd, target, on) {
   if (on && avd !== mirrorAvd()) {
@@ -618,7 +791,7 @@ async function setAvdDisplay(avd, target, on) {
       cur
         ? `AVD Mirror mirrors one emulator at a time: ${cur} is on screen. Stop it `
           + `(or start ${avd}) before showing ${avd} in the ${DISPLAY_TARGETS[target].label}.`
-        : `${avd} is not running. Start it first, then tick where its mirror should appear.`
+        : `${avd} is not running. Start it first, then switch on where its mirror should appear.`
     );
     if (avdTreeRef) avdTreeRef.refresh();
     return;
@@ -626,7 +799,21 @@ async function setAvdDisplay(avd, target, on) {
   await setDisplay(target, on);
 }
 
-/** The three switches as one multi-select list, for the Command Palette. */
+/**
+ * A surface command, from an AVD row or from the Command Palette.
+ *
+ * The eight commands are contributed as inline actions on the AVD row, which
+ * passes that item; a palette invocation passes nothing. Only the row form is
+ * about one AVD, and resolveAvdName() tells them apart, so the palette keeps
+ * acting on whatever the mirror is showing.
+ */
+async function setSurfaceFromArg(arg, target, on) {
+  const avd = resolveAvdName(arg);
+  if (avd) return setAvdDisplay(avd, target, on);
+  return setDisplay(target, on);
+}
+
+/** The surfaces as one multi-select list, for the Command Palette. */
 async function chooseDisplay() {
   const picks = DISPLAY_KEYS.map(key => ({
     key,
@@ -657,13 +844,21 @@ class MirrorViewProvider {
     this._page = null;
   }
 
-  /** Is the Screen view actually on screen? The Panel checkbox reads this. */
+  /** Is the Screen view actually on screen? Only part of the Panel answer - see panelShown(). */
   get visible() {
     return !!(this._view && this._view.visible);
   }
 
   /** Set HTML on a webview once the page is available, else show the hint. */
   async paint(target) {
+    // The panel surface can be switched off without closing the part: there is no
+    // API to hide a single view, and closing the part takes the AVDs view - and
+    // these switches - with it. A blank page is the honest "off": the mirror page
+    // stops polling, the part stays where the user put it.
+    if (target === this._view && !panelMirror) {
+      this.showBlank();
+      return;
+    }
     // Nothing to fetch on a platform that cannot serve it: show the reason rather
     // than leaving "Loading the mirror from port 8777..." up forever.
     if (unsupportedPlatform()) {
@@ -672,17 +867,39 @@ class MirrorViewProvider {
       return;
     }
     try {
-        // Always re-fetch. The page embeds the mirror's CSS, and this provider is
-        // asked to paint on every visibility change, so a cached copy here pins
-        // whatever CSS was current at first load into the panel for the rest of
-        // the session - edits to mirror.ps1 appeared to have no effect at all.
-        this._page = await loadPage();
-        target.webview.html = this._html(this._page);
-      } catch (e) {
-        output.appendLine(`paint failed: ${e && e.message ? e.message : e}`);
-        target.webview.html = this._html(null);
-      }
+      // Always re-fetch. The page embeds the mirror's CSS, and this provider is
+      // asked to paint on every visibility change, so a cached copy here pins
+      // whatever CSS was current at first load into the panel for the rest of
+      // the session - edits to mirror.ps1 appeared to have no effect at all.
+      this._page = await loadPage();
+      target.webview.html = this._html(this._page);
+    } catch (e) {
+      output.appendLine(`paint failed: ${e && e.message ? e.message : e}`);
+      target.webview.html = this._html(null);
     }
+  }
+
+  /** Replace the mirror in the Screen view with an empty page. */
+  showBlank() {
+    if (this._view) this._view.webview.html = MirrorViewProvider.blankHtml();
+  }
+
+  /** The "switched off" page: background, one line, nothing that polls. */
+  static blankHtml() {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html,body{height:100%}
+  body{margin:0;display:flex;align-items:center;justify-content:center;
+       font:12px/1.5 var(--vscode-font-family);
+       color:var(--vscode-descriptionForeground);background:var(--vscode-editor-background)}
+</style>
+</head>
+<body>Mirror hidden - tick Panel in the AVDs view to show it.</body>
+</html>`;
+  }
 
   resolveWebviewView(webviewView) {
       try {
@@ -709,6 +926,7 @@ class MirrorViewProvider {
           // The Panel checkbox in the AVDs view mirrors this, so it has to be
           // repainted when the panel is opened or closed by any other route -
           // the status bar entry, Ctrl+J, or closing the panel by hand.
+          syncDisplay();
           if (avdTreeRef) avdTreeRef.refresh();
         });
       } catch (e) {
@@ -723,6 +941,9 @@ class MirrorViewProvider {
     this._page = null;
     if (this._view) this.paint(this._view);
     if (this._editor) this.paint(this._editor);
+    // The embedded browser holds a live document, not a painted copy, so there is
+    // nothing to re-fetch: re-setting the html is what makes the frame load again.
+    if (embeddedPanel) embeddedPanel.webview.html = embeddedHtml();
   }
 
   /** Panel body for a machine that cannot run any of this. Static: no page needed. */
@@ -757,12 +978,13 @@ class MirrorViewProvider {
         // relative endpoints are rewritten to absolute URLs below.
         const csp = [
           "default-src 'none'",
-          // 8777 is the mirror, 8778 the WGC capturer, 8779 the AVD manager.
-          // The AVD manager has to be listed or the page's AVD picker is
-          // blocked by CSP and reports "no manager" even though the manager
-          // is running - the browser tab has no CSP, which is why the same
-          // controls worked there and not in the panel.
-          `connect-src ${base} http://${HOST}:8778 http://${HOST}:8779`,
+          // 8777 is the mirror, 8778 the WGC capturer, and the AVD manager gets
+          // whichever of its candidate ports was free - see pickAvdPort(). The
+          // manager has to be listed or the page's AVD picker is blocked by CSP
+          // and reports "no manager" even though the manager is running - the
+          // browser tab has no CSP, which is why the same controls worked there
+          // and not in the panel.
+          `connect-src ${base} http://${HOST}:8778 http://${HOST}:${avdPort}`,
           `img-src ${base} data: blob: http://${HOST}:8778`,
           "style-src 'unsafe-inline'",
           "script-src 'unsafe-inline'",
@@ -961,24 +1183,6 @@ class AvdTreeProvider {
   }
 
   getTreeItem(el) {
-    if (el instanceof DisplayItem) {
-      const meta = DISPLAY_TARGETS[el.target];
-      // A tick means "this AVD is on that surface", not "this AVD would like to
-      // be": the two are the same thing until a second emulator is started, and
-      // only one of them can be true at a time.
-      const shown = displayShown(el.target) && displayOwner[el.target] === el.avd;
-      const item = new vscode.TreeItem(meta.label, vscode.TreeItemCollapsibleState.None);
-      item.checkboxState = shown
-        ? vscode.TreeItemCheckboxState.Checked
-        : vscode.TreeItemCheckboxState.Unchecked;
-      item.iconPath = new vscode.ThemeIcon(shown ? meta.onIcon : meta.offIcon);
-      item.description = shown ? 'shown' : 'hidden';
-      item.tooltip = `${meta.detail}\n\nTick to show ${el.avd}'s mirror here.`;
-      item.contextValue = 'displayTarget';
-      // Deliberately no `command`: with a checkbox on the row, a command would
-      // toggle a second time for a single click and appear to do nothing.
-      return item;
-    }
     if (el instanceof ErrorItem) {
       const bad = new vscode.TreeItem(el.message, vscode.TreeItemCollapsibleState.None);
       bad.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('problemsWarningIcon.foreground'));
@@ -990,9 +1194,14 @@ class AvdTreeProvider {
     const running = st.running === el.name;
     const selected = st.selected === el.name;
     const mirrored = mirrorAvd() === el.name;
-    // Every AVD expands into its own three switches, so the mirror's placement
-    // is chosen per AVD rather than once for the whole view.
-    const item = new vscode.TreeItem(el.name, vscode.TreeItemCollapsibleState.Collapsed);
+    // The row *is* the switch panel: the four surfaces ride on it as inline icon
+    // actions (package.json `view/item/context`), so nothing has to be expanded
+    // to reach them. They are contributed only for the mirrored AVD - the one
+    // whose mirror can actually be placed - which is what the `Mirrored` suffix
+    // on the context value gates. A single context value cannot be two things at
+    // once, so the running/idle and mirrored facts are spelled out as four values
+    // that the menus match with `||`.
+    const item = new vscode.TreeItem(el.name, vscode.TreeItemCollapsibleState.None);
     item.description = running
       ? '● running'
       : (selected ? '○ selected' : '');
@@ -1004,8 +1213,10 @@ class AvdTreeProvider {
                : (selected ? new vscode.ThemeColor('charts.blue') : undefined)
     );
     item.tooltip = `${el.name}${el.api ? ' - ' + el.api : ''}${el.device ? ' - ' + el.device : ''}`
-      + (mirrored ? '\n\nThis is the AVD the mirror is showing.' : '\n\nThe mirror cannot show this AVD until it is the one running.');
-    item.contextValue = running ? 'avdRunning' : 'avdIdle';
+      + (mirrored
+        ? '\n\nThis is the AVD the mirror is showing; the icons on the right place it.'
+        : '\n\nThe mirror cannot show this AVD until it is the one running.');
+    item.contextValue = (running ? 'avdRunning' : 'avdIdle') + (mirrored ? 'Mirrored' : '');
     item.command = {
       command: 'avdMirror.selectAvd',
       title: 'Select AVD',
@@ -1018,11 +1229,11 @@ class AvdTreeProvider {
     // Rendering the tree is also the signal that it is on screen.
     this.start();
     if (!this._state) await this.poll();
-    // The checkboxes are about to be built from these, so re-read the surfaces
+    // The switches are about to be drawn from these, so re-read the surfaces
     // first: a tab opened or closed since the last render has to be reflected.
     syncDisplay();
-    if (el instanceof DisplayItem) return [];
-    if (el && el.name) return DISPLAY_KEYS.map(target => new DisplayItem(el.name, target));
+    // AVDs have no children now - their switches are inline on the row.
+    if (el) return [];
     const st = this._state || {};
     const avds = (st.avds || []).map(a => ({ name: a.name, api: a.api, device: a.device }));
     // An empty list has to say why it is empty: "no AVDs" and "manager not
@@ -1037,14 +1248,15 @@ class AvdTreeProvider {
  *
  * The same command is reachable from three places and each hands over a
  * different kind of argument:
- *   - the view title bar  -> the TreeView object
- *   - an item's context menu -> the tree item (an object with .name)
- *   - the command palette -> nothing at all
+ *   - an item's inline action -> the tree item (an object with .name)
+ *   - the Command Palette -> nothing at all
+ *   - a view title-bar entry -> the TreeView object, which this also has to
+ *     tolerate: it has no `.name`, so it must not be mistaken for an AVD
  *
- * Passing the argument straight through meant the title bar's start button
- * asked the manager to start an AVD literally named "[object Object]". Only a
- * plain string is an AVD name; a tree item contributes its .name; anything else
- * means "no AVD was named", which falls back to the selected one.
+ * Passing the argument straight through meant a title-bar button asked the
+ * manager to start an AVD literally named "[object Object]". Only a plain string
+ * is an AVD name; a tree item contributes its .name; anything else means "no AVD
+ * was named", which falls back to the selected one.
  */
 function resolveAvdName(arg) {
   if (typeof arg === 'string') return arg.trim();
@@ -1061,7 +1273,7 @@ async function selectAvd(arg) {
   }
   await startAvdManager();
   try {
-    await fetch(`${AVD_URL}/avd/select?name=${encodeURIComponent(name)}`, { cache: 'no-store' });
+    await fetch(`${avdUrl()}/avd/select?name=${encodeURIComponent(name)}`, { cache: 'no-store' });
   } catch (e) {
     vscode.window.showErrorMessage(`AVD Mirror: could not select ${name} - ${e && e.message ? e.message : e}`);
     return;
@@ -1225,18 +1437,17 @@ function activate(context) {
   // the manager on 8779. getChildren() starts it too, because the initial
   // visibility of an already-open tab does not fire a change event.
   const treeView = vscode.window.createTreeView('avdMirror.avds', { treeDataProvider: avdTree });
+  avdTreeView = treeView;
   context.subscriptions.push(
     treeView,
-    treeView.onDidChangeVisibility(e => { if (e.visible) avdTree.start(); else avdTree.stop(); }),
-    // The per-AVD checkboxes. The state is applied and then the tree is
-    // repainted from the live surfaces, so a surface that refuses to change
-    // reports that instead of leaving a box ticked over nothing.
-    treeView.onDidChangeCheckboxState(async e => {
-      for (const [el, state] of e.items) {
-        if (el instanceof DisplayItem) {
-          await setAvdDisplay(el.avd, el.target, state === vscode.TreeItemCheckboxState.Checked);
-        }
-      }
+    treeView.onDidChangeVisibility(e => {
+      if (e.visible) avdTree.start(); else avdTree.stop();
+      // The Panel switch is derived from this view too, so switching tabs has to
+      // repaint the icons at once instead of on the next 3 s poll - and the
+      // context key has to move even when the tree is not on screen, which is why
+      // this calls syncDisplay() rather than relying on the repaint.
+      syncDisplay();
+      avdTree.refresh();
     })
   );
     // A supervision failure must never escape into a view provider or panel:
@@ -1257,16 +1468,21 @@ function activate(context) {
       vscode.commands.registerCommand('avdMirror.refreshAvds', () => avdTree.poll()),
       vscode.commands.registerCommand('avdMirror.openInEditor', () => setDisplay('editor', true)),
       vscode.commands.registerCommand('avdMirror.toggleDisplay', chooseDisplay),
-      // The three global switches in the AVDs title bar. Each surface is a pair
-      // of commands - show and hide - because a menu entry's icon is fixed per
-      // command, so the only way to paint on/off state is to swap the command
-      // (and its glyph) on a context key that syncDisplay() maintains.
-      vscode.commands.registerCommand('avdMirror.showInPanel', () => setDisplay('panel', true)),
-      vscode.commands.registerCommand('avdMirror.hideFromPanel', () => setDisplay('panel', false)),
-      vscode.commands.registerCommand('avdMirror.showInEditor', () => setDisplay('editor', true)),
-      vscode.commands.registerCommand('avdMirror.hideFromEditor', () => setDisplay('editor', false)),
-      vscode.commands.registerCommand('avdMirror.showInBrowser', () => setDisplay('browser', true)),
-      vscode.commands.registerCommand('avdMirror.hideFromBrowser', () => setDisplay('browser', false)),
+      // The switches. Each surface is a pair of commands - show and hide -
+      // because a menu entry's icon is fixed per command, so the only way to
+      // paint on/off state is to swap the command (and its glyph) on a context
+      // key that syncDisplay() maintains. They are contributed only as inline
+      // actions on the AVD row, which is why they take an argument - see
+      // setSurfaceFromArg. There are no global copies: the header duplicated
+      // four controls that the row already carries.
+      vscode.commands.registerCommand('avdMirror.showInPanel', arg => setSurfaceFromArg(arg, 'panel', true)),
+      vscode.commands.registerCommand('avdMirror.hideFromPanel', arg => setSurfaceFromArg(arg, 'panel', false)),
+      vscode.commands.registerCommand('avdMirror.showInEditor', arg => setSurfaceFromArg(arg, 'editor', true)),
+      vscode.commands.registerCommand('avdMirror.hideFromEditor', arg => setSurfaceFromArg(arg, 'editor', false)),
+      vscode.commands.registerCommand('avdMirror.showInBrowser', arg => setSurfaceFromArg(arg, 'browser', true)),
+      vscode.commands.registerCommand('avdMirror.hideFromBrowser', arg => setSurfaceFromArg(arg, 'browser', false)),
+      vscode.commands.registerCommand('avdMirror.showInEmbedded', arg => setSurfaceFromArg(arg, 'embedded', true)),
+      vscode.commands.registerCommand('avdMirror.hideFromEmbedded', arg => setSurfaceFromArg(arg, 'embedded', false)),
       vscode.commands.registerCommand('avdMirror.open', () => {
         vscode.commands.executeCommand('avdMirror.view.focus');
         safeStart();

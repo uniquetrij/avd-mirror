@@ -36,7 +36,7 @@ input, and never gets lost among other tabs.
 |---|---|
 | `extension.js` | the VS Code extension: supervises the servers, embeds the page, hosts the AVD tree view |
 | `scripts/mirror.ps1` | the mirror server (port 8777) and the whole browser page it serves |
-| `scripts/avd.ps1` | the AVD manager (port 8779): list / start / stop / select AVDs |
+| `scripts/avd.ps1` | the AVD manager (port 8779, or the next free one): list / start / stop / select AVDs |
 | `src/wgccap/` | the .NET 8 Windows.Graphics.Capture capturer (port 8778) |
 | `harness.js` | runs the extension against a mock VS Code API, so runtime errors show up without the extension host |
 | `SKILL.md` | the technical reference: capture internals, endpoints, and the traps in each part |
@@ -53,33 +53,49 @@ installed VSIX.
    bottom of the window.
 2. The panel has two horizontal tabs, **Screen** and **AVDs**. Screen starts
    `mirror.ps1` on port 8777 if it is not already running; the frame appears as
-   soon as the server answers. **AVDs** lists every AVD with its state and can
-   start or stop them.
+   soon as the server answers. **AVDs** lists every AVD with its state. Click a row
+   to make it the one the mirror shows; the ▶ button on a stopped row starts it,
+   ⏹ on a running one stops it, and right-click offers **Force Stop AVD** for a
+   guest that ignores the request.
 3. Where the mirror appears is chosen **per AVD**. Every AVD row in the **AVDs**
-   tree expands into its own three switches — **Panel**, **Editor Tab**,
-   **Browser** — and ticking one opens or closes that surface for that AVD.
-   The same three sit in the AVDs title bar as icon toggles (panel, editor,
-   browser) that light up when the surface is on, so the current placement is
-   readable without expanding a row.
+   tree carries its own switches — **Panel**, **Editor Tab**, **Browser**,
+   **Embedded Browser** — as icon actions on the right of the row, so nothing has
+   to be expanded: click one to open or close that surface for that AVD. A filled
+   glyph means the surface is on; its hollow twin means it is off, so the current
+   placement is readable without opening anything.
    - The mirror binds to one emulator window, so only one AVD at a time can be on
-     screen. Ticking a surface on a *different* AVD is refused with a message
-     naming the AVD in the way, and new AVDs start with nothing ticked.
-   - The checks follow reality: close the editor tab by hand and the box clears
-     itself. Unchecking **Panel** closes the whole panel (there is no API to hide
-     a single view), which takes the AVDs view and its switches with it — the
-     Command Palette or the status bar entry is then the way back.
-   - **Browser** cannot be closed by VS Code: unchecking it stops the extension
-     counting that tab as shown, nothing more.
-   - `AVD Mirror: Choose Where to Show` (Command Palette) offers the same three
-     for the current AVD as one multi-select, so "panel and browser, but no editor
-     tab" is a state you can hold.
+     screen. That is why the row actions only appear on the AVD the mirror is
+     showing; asking for another AVD is refused with a message naming the AVD in
+     the way.
+   - The icons follow reality: close the editor tab by hand and the glyph goes
+     hollow again. **Panel** means the mirror is being drawn into the AVD Mirror
+     container — either of its tabs counts, so the switch stays on while you are
+     reading the AVD list. Turning it off **blanks the screen** rather than
+     closing anything: the panel (or side bar), the AVDs view and these switches
+     all stay put, and clicking Panel again brings the mirror back.
+   - **Browser** cannot be closed by VS Code: turning it off stops the extension
+     counting that tab as shown, nothing more. **Embedded Browser** is the same
+     page framed inside an editor tab, so it stays inside VS Code and turning it
+     off really does close the tab.
+   - `AVD Mirror: Choose Where to Show` (Command Palette) offers the same
+     switches for the current AVD as one multi-select, so "panel and browser, but
+     no editor tab" is a state you can hold.
 4. Full height is one click away — the `⤢` action in the Screen tab's title bar,
    or `AVD Mirror: Open Full Screen (Editor Tab)`, opens the same mirror as an
    editor tab.
 5. Command Palette → `AVD Mirror:` for Open Panel / Choose Where to Show / Start /
    Stop / Restart / Reload.
 
-Server logs go to the **AVD Mirror** output channel.
+Server logs go to the **AVD Mirror** output channel. If the **Embedded Browser**
+tab ever shows only a message that the mirror page has not loaded, run
+`AVD Mirror: Restart Server` and reopen the tab: the tab is a frame around the
+running server, and a server started by an older version can outlive a reload.
+
+If the **AVDs** view says the manager could not start, the output channel names
+the port it tried: ports 8779, then 8781–8783. A port can be left behind by a
+process that has exited, in which case it refuses connections yet cannot be
+bound; the extension moves to the next one instead of failing, and returns to
+8779 once it is free again.
 
 The page also runs on its own at <http://127.0.0.1:8777/> — the extension only
 embeds it.

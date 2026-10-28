@@ -30,7 +30,10 @@ param(
   [int]$Quality = 70,          # JPEG quality 1-100
   [switch]$NoRescue,           # do not auto-restore/park a minimized emulator
   [string]$Avd = '',           # AVD to start if none is running (default: the selected one)
-  [switch]$NoAutoStart         # fail instead of starting an AVD when none is running
+  [switch]$NoAutoStart,        # fail instead of starting an AVD when none is running
+  # Where the AVD manager (avd.ps1) ended up. It prefers 8779 but moves when that
+  # port is taken, and the page has to call the same one - see the rewrite below.
+  [int]$AvdPort = 8779
 )
 
 $ErrorActionPreference = 'Stop'
@@ -2236,13 +2239,29 @@ document.addEventListener('visibilitychange',()=>{ if(document.hidden) liftAll()
 </script></body></html>
 '@
 
+# The page calls the AVD manager cross-origin, so it has to be told the port the
+# extension actually got for it (avd.ps1 prefers 8779 but moves when that port is
+# held by something else). The literal in the page above is the default.
+if ($AvdPort -ne 8779) {
+  $html = $html.Replace("127.0.0.1:8779", "127.0.0.1:$AvdPort")
+}
+
 function Send-Bytes([System.Net.Sockets.NetworkStream]$s, [string]$status, [string]$contentType, [byte[]]$body) {
   # frame-ancestors lets the page be embedded; the CORS headers let it also be
   # *inlined* into a VS Code webview, whose origin is not 127.0.0.1 and so cannot
   # read loopback responses without them. The listener is bound to loopback
   # only, so the exposure is other local processes (and any web page the user
   # happens to visit that reads 127.0.0.1:8777) - never the network.
-  $head = "HTTP/1.1 $status`r`nContent-Type: $contentType`r`nContent-Length: $($body.Length)`r`nCache-Control: no-store`r`nContent-Security-Policy: frame-ancestors *`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: *`r`nConnection: close`r`n`r`n"
+  #
+  # `*` alone does NOT make the page framable everywhere: it matches only network
+  # schemes (http, https, ws, wss), so a VS Code webview was refused with
+  # "Framing 'http://127.0.0.1:8777/' violates the following Content Security
+  # Policy directive: frame-ancestors *" - the embedded-browser tab came up black.
+  # frame-ancestors is checked against every ancestor, and a desktop webview sits
+  # inside two non-network documents: the webview itself (`vscode-webview:`) and
+  # the workbench window (`vscode-file:`). Non-network schemes have to be listed
+  # explicitly; `file:` covers a local harness page.
+  $head = "HTTP/1.1 $status`r`nContent-Type: $contentType`r`nContent-Length: $($body.Length)`r`nCache-Control: no-store`r`nContent-Security-Policy: frame-ancestors * vscode-webview: vscode-file: file:`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: *`r`nConnection: close`r`n`r`n"
   $hb = [System.Text.Encoding]::ASCII.GetBytes($head)
   $s.Write($hb, 0, $hb.Length)
   if ($body -and $body.Length -gt 0) { $s.Write($body, 0, $body.Length) }
