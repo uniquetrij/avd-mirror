@@ -11,6 +11,14 @@ would return black. Gestures are streamed to the guest as real pointer events,
 so every gesture the emulator understands — tap, hold, drag, swipe, fling,
 pinch, two-finger pan, edge system-nav — behaves as it does on the device.
 
+<!-- Screenshots: drop media/screenshots/{mirror-panel,avds-menu}.png in place
+     (see media/screenshots/README.md) and uncomment this block.
+
+![The mirror panel with the AVDs view beside it](media/screenshots/mirror-panel.png)
+
+![An AVD's context menu: per-AVD surfaces and Hide Emulator Window](media/screenshots/avds-menu.png)
+-->
+
 ## Requirements
 
 - **Windows 10 build 19041 or newer.** The capture is Windows Graphics Capture
@@ -194,7 +202,8 @@ dotnet build -c Release
 ## Install from source
 
 ```powershell
-cd C:\Users\uniqu\Projects\avd-mirror
+git clone https://github.com/uniquetrij/avd-mirror
+cd avd-mirror
 npx @vscode/vsce package --allow-missing-repository
 code --install-extension avd-mirror-<version>.vsix --force
 ```

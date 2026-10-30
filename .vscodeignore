@@ -1,13 +1,22 @@
 # The VSIX ships everything the extension needs at runtime:
+#   extension.js, package.json, readme.md, CHANGELOG.md, LICENSE
 #   scripts/            the mirror and AVD manager servers
 #   src/wgccap/bin/     the built WGC capturer (wgccap.exe + its runtime pack)
 # so an installed copy works in any workspace, with no project checkout nearby.
 #
-# Excluded: the dev-only harness, the packaging output, the git metadata and
-# the .NET build intermediates (the built bin/ folder is what ships).
+# Excluded: the dev-only harness and the internal design notes, the .NET sources
+# and build intermediates (the built bin/ folder is what ships), the readme's
+# screenshots (vsce rewrites those to absolute GitHub URLs, so they need not
+# ship), and the packaging output. The PDB is debug symbols, which nothing
+# loads at runtime.
 harness.js
+SKILL.md
 *.vsix
 .git/**
 .gitignore
 .vscodeignore
 src/wgccap/obj/**
+src/wgccap/*.cs
+src/wgccap/*.csproj
+src/wgccap/bin/**/*.pdb
+media/screenshots/**

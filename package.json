@@ -3,14 +3,48 @@
   "displayName": "AVD Mirror",
   "description": "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
   "version": "0.3.39",
-  "publisher": "local",
+  "publisher": "uniquetrij",
   "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1E2228",
+    "theme": "dark"
+  },
+  "preview": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/uniquetrij/avd-mirror.git"
+  },
+  "homepage": "https://github.com/uniquetrij/avd-mirror#readme",
+  "bugs": {
+    "url": "https://github.com/uniquetrij/avd-mirror/issues"
+  },
+  "keywords": [
+    "android",
+    "emulator",
+    "avd",
+    "mirror",
+    "scrcpy",
+    "screen",
+    "mirroring",
+    "touch",
+    "adb",
+    "android-studio",
+    "device",
+    "mobile",
+    "testing",
+    "remote"
+  ],
+  "categories": [
+    "Testing",
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": [
-    "Other"
-  ],
   "main": "./extension.js",
   "activationEvents": [
     "onView:avdMirror.view",
