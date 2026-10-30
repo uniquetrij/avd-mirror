@@ -191,8 +191,9 @@ The mirror server binds to loopback only, and `mirror.ps1` sends
 ## Build
 
 The WGC capturer is a .NET 8 program; build it once for the full-rate path
-(the server falls back to `PrintWindow` if it is missing — slower, and it has a
-channel-swap tint bug):
+(needs the .NET 8 **SDK**, not just the runtime; the server falls back to
+`PrintWindow` if the capturer is missing — slower, and it has a channel-swap
+tint bug):
 
 ```powershell
 cd src/wgccap
@@ -204,12 +205,15 @@ dotnet build -c Release
 ```powershell
 git clone https://github.com/uniquetrij/avd-mirror
 cd avd-mirror
-npx @vscode/vsce package --allow-missing-repository
+cd src/wgccap; dotnet build -c Release; cd ../..
+npx @vscode/vsce package
 code --install-extension avd-mirror-<version>.vsix --force
 ```
 
 The VSIX bundles `scripts/` and the built capturer, so the installed extension
-is self-contained and works in any workspace.
+is self-contained and works in any workspace. The capturer's `bin/` folder is
+not in the repository, so build it first — otherwise the VSIX packages without
+`wgccap.exe` and the mirror runs on the `PrintWindow` fallback.
 
 Then run **Developer: Reload Window** once so VS Code registers the new view.
 
