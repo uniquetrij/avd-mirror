@@ -659,8 +659,7 @@ async function loadPage() {
 // --- where the mirror is displayed ------------------------------------------
 // Four surfaces can show the mirror: the VS Code panel, an editor tab, the
 // default browser, and an embedded browser (the live page framed inside an editor
-// tab). The AVDs view carries one checkbox per surface *under each AVD*, and the
-// global switches live in that view's title bar.
+// tab). The AVD row's menu lists them, and so does the Command Palette.
 //
 // A surface has at most one owner, because the mirror itself does: mirror.ps1
 // binds to a single emulator window, so "ai_dating in a tab and pixel_test in
@@ -675,25 +674,30 @@ async function loadPage() {
 // exception - vscode.env.openExternal is one-way, so clearing its switch only
 // stops us counting that tab as shown.
 //
-// The glyph pairs are not here: each surface is two menu entries in package.json,
-// gated on `avdMirror.shown.<key>`, so the on and off icons have to live beside
-// the commands that use them. A surface with only one half of its pair is an icon
-// that never changes, which reads as a broken switch.
+// The switches are one entry, not four: a menu row is built from a check span and
+// a plain text label, so it can show neither an icon nor a tick, while a QuickPick
+// row shows both. So the row menu offers a single "Choose Where to Show" that
+// opens a ticked list of the four surfaces - real codicons, real checkboxes - and
+// the Command Palette offers the same command.
 const DISPLAY_TARGETS = {
   panel: {
     label: 'Panel',
+    icon: 'layout-panel',
     detail: 'The Screen view, wherever the AVD Mirror container lives - the panel, or either side bar if it was dragged there. Turning it off blanks that view instead of closing the part it sits in.',
   },
   editor: {
     label: 'Editor Tab',
+    icon: 'screen-full',
     detail: 'The mirror as a full-height editor tab, next to your code.',
   },
   browser: {
     label: 'Browser',
+    icon: 'globe',
     detail: `The page at ${MIRROR_URL} in your default browser. VS Code cannot close that tab again.`,
   },
   embedded: {
     label: 'Embedded Browser',
+    icon: 'browser',
     detail: `The same page at ${MIRROR_URL}, framed inside an editor tab so it never leaves VS Code. It loads from the server rather than being copied in, so it survives what the Editor Tab inlining has to work around.`,
   },
 };
@@ -704,10 +708,6 @@ function mirrorAvd() {
   const st = (avdTreeRef && avdTreeRef.state) || {};
   return st.running || st.selected || null;
 }
-
-/** Is each surface on screen? One entry per target, read by the menu gates. */
-const displayContext = {};
-for (const key of DISPLAY_KEYS) { displayContext[key] = null; }
 
 // The emulator window's own parking spot. Unlike the surfaces this is not derived
 // from anything we own - the server moves the window, and the mirror page has a
@@ -725,8 +725,8 @@ let emulatorStateBusy = false;
  * alone: the AVDs view is visible exactly when the user is looking at these very
  * switches, and the Screen view is visible only on its own tab. Asking only
  * about the Screen view made the Panel switch report "hidden" while the panel
- * was open on the AVDs tab - so flipping it appeared to do nothing, and the title
- * bar offered "show" for something already shown.
+ * was open on the AVDs tab - so flipping it appeared to do nothing, and the
+ * picker offered to show something already shown.
  */
 function panelShown() {
   return !!panelMirror
@@ -741,24 +741,13 @@ function displayShown(target) {
 }
 
 /**
- * Re-read the live surfaces before the tree renders.
+ * Re-read the state the menus gate on, before the tree renders.
  *
  * Called from getChildren, which the tree already runs on every poll and on
- * every refresh, so nothing extra ticks: the row icons follow whatever is true
- * right now.
+ * every refresh, so nothing extra ticks: the emulator switch follows whatever is
+ * true right now. The surfaces need no pass - the picker reads them when it opens.
  */
 function syncDisplay() {
-  for (const target of DISPLAY_KEYS) {
-    const shown = displayShown(target);
-    // Each surface is two menu entries with different icons, gated on this key:
-    // a filled glyph when the surface is on, its "off" counterpart when it is
-    // not - the only way to paint state on a menu entry, whose icon is fixed per
-    // command. Cached so the 3 s poll does not churn the menu registry.
-    if (displayContext[target] !== shown) {
-      displayContext[target] = shown;
-      vscode.commands.executeCommand('setContext', `avdMirror.shown.${target}`, shown);
-    }
-  }
   // The emulator window's state lives on the server, so it has to be asked for.
   // Deliberately not awaited: the tree renders from what is known now, and the
   // answer repaints the menu when it lands.
@@ -947,31 +936,29 @@ async function setAvdDisplay(avd, target, on) {
 }
 
 /**
- * A surface command, from an AVD row or from the Command Palette.
+ * The surfaces as one ticked list.
  *
- * The eight commands are contributed as inline actions on the AVD row, which
- * passes that item; a palette invocation passes nothing. Only the row form is
- * about one AVD, and resolveAvdName() tells them apart, so the palette keeps
- * acting on whatever the mirror is showing.
+ * The AVD row's menu and the Command Palette both come here. A row passes its
+ * item, so what it lists belongs to that AVD; the palette passes nothing and acts
+ * on whatever the mirror is showing. Each row carries the surface's codicon - the
+ * one thing a context-menu entry cannot draw.
  */
-async function setSurfaceFromArg(arg, target, on) {
+async function chooseDisplay(arg) {
   const avd = resolveAvdName(arg);
-  if (avd) return setAvdDisplay(avd, target, on);
-  return setDisplay(target, on);
-}
-
-/** The surfaces as one multi-select list, for the Command Palette. */
-async function chooseDisplay() {
+  // Only the mirrored AVD can own a surface, so any other row starts from nothing
+  // on: showing it its own ticks would promise a mirror that cannot appear there.
+  const shownHere = key => (avd && avd !== mirrorAvd() ? false : displayShown(key));
   const picks = DISPLAY_KEYS.map(key => ({
     key,
     label: DISPLAY_TARGETS[key].label,
-    description: displayShown(key) ? 'shown' : 'hidden',
+    iconPath: new vscode.ThemeIcon(DISPLAY_TARGETS[key].icon),
+    description: shownHere(key) ? 'shown' : 'hidden',
     detail: DISPLAY_TARGETS[key].detail,
-    picked: displayShown(key),
+    picked: shownHere(key),
   }));
   const chosen = await vscode.window.showQuickPick(picks, {
     canPickMany: true,
-    title: 'AVD Mirror: show the mirror in',
+    title: avd ? `AVD Mirror: show ${avd} in` : 'AVD Mirror: show the mirror in',
     placeHolder: 'Tick every place the mirror should appear',
   });
   if (!chosen) return;
@@ -979,7 +966,9 @@ async function chooseDisplay() {
   // and re-fetch the page for nothing.
   for (const pick of picks) {
     const want = chosen.some(c => c.key === pick.key);
-    if (want !== pick.picked) await setDisplay(pick.key, want);
+    if (want === pick.picked) continue;
+    if (avd) await setAvdDisplay(avd, pick.key, want);
+    else await setDisplay(pick.key, want);
   }
 }
 
@@ -1638,9 +1627,8 @@ function activate(context) {
     treeView.onDidChangeVisibility(e => {
       if (e.visible) avdTree.start(); else avdTree.stop();
       // The Panel switch is derived from this view too, so switching tabs has to
-      // repaint the icons at once instead of on the next 3 s poll - and the
-      // context key has to move even when the tree is not on screen, which is why
-      // this calls syncDisplay() rather than relying on the repaint.
+      // repaint at once instead of on the next 3 s poll - which is why this calls
+      // syncDisplay() rather than relying on the repaint.
       syncDisplay();
       avdTree.refresh();
     })
@@ -1663,21 +1651,6 @@ function activate(context) {
       vscode.commands.registerCommand('avdMirror.refreshAvds', () => avdTree.poll()),
       vscode.commands.registerCommand('avdMirror.openInEditor', () => setDisplay('editor', true)),
       vscode.commands.registerCommand('avdMirror.toggleDisplay', chooseDisplay),
-      // The switches. Each surface is a pair of commands - show and hide -
-      // because a menu entry's icon is fixed per command, so the only way to
-      // paint on/off state is to swap the command (and its glyph) on a context
-      // key that syncDisplay() maintains. They are contributed only as inline
-      // actions on the AVD row, which is why they take an argument - see
-      // setSurfaceFromArg. There are no global copies: the header duplicated
-      // four controls that the row already carries.
-      vscode.commands.registerCommand('avdMirror.showInPanel', arg => setSurfaceFromArg(arg, 'panel', true)),
-      vscode.commands.registerCommand('avdMirror.hideFromPanel', arg => setSurfaceFromArg(arg, 'panel', false)),
-      vscode.commands.registerCommand('avdMirror.showInEditor', arg => setSurfaceFromArg(arg, 'editor', true)),
-      vscode.commands.registerCommand('avdMirror.hideFromEditor', arg => setSurfaceFromArg(arg, 'editor', false)),
-      vscode.commands.registerCommand('avdMirror.showInBrowser', arg => setSurfaceFromArg(arg, 'browser', true)),
-      vscode.commands.registerCommand('avdMirror.hideFromBrowser', arg => setSurfaceFromArg(arg, 'browser', false)),
-      vscode.commands.registerCommand('avdMirror.showInEmbedded', arg => setSurfaceFromArg(arg, 'embedded', true)),
-      vscode.commands.registerCommand('avdMirror.hideFromEmbedded', arg => setSurfaceFromArg(arg, 'embedded', false)),
       vscode.commands.registerCommand('avdMirror.open', () => {
         vscode.commands.executeCommand('avdMirror.view.focus');
         safeStart();

@@ -65,30 +65,32 @@ installed VSIX.
    to make it the one the mirror shows; the ▶ button on a stopped row starts it,
    ⏹ on a running one stops it, and right-click offers **Force Stop AVD** for a
    guest that ignores the request.
-3. Where the mirror appears is chosen **per AVD**. Every AVD row in the **AVDs**
-   tree carries its own switches — **Show/Hide in Panel**, **Editor Tab**,
-   **Browser**, **Embedded Browser** — in the row's right-click menu (`...` or
-   right-click on the AVD), so nothing has to be expanded: pick one to open or
-   close that surface for that AVD. A filled glyph means the surface is on; its
-   hollow twin means it is off, so the current placement is readable without
-   opening anything; only the entry that matches the state is listed.
+3. Where the mirror appears is chosen **per AVD**. Right-click an AVD row (or its
+   `...`) and pick **Choose Where to Show**: one ticked list of the four surfaces
+   — **Panel**, **Editor Tab**, **Browser**, **Embedded Browser** — each with its
+   codicon and each ticked where it is on screen right now. Tick two to have the
+   mirror in both places, untick one to close it.
+   - The surfaces are one menu entry because of how VS Code builds a context
+     menu: a plain text label and a check span. A row there can draw neither a
+     codicon nor a tick, so the icons and the state live in the list the entry
+     opens.
    - The mirror binds to one emulator window, so only one AVD at a time can be on
-     screen. That is why the row menu only offers switches on the AVD the mirror
-     is showing; asking for another AVD is refused with a message naming the AVD
-     in the way.
-   - The icons follow reality: close the editor tab by hand and the glyph goes
-     hollow again. **Panel** means the mirror is being drawn into the AVD Mirror
-     container — either of its tabs counts, so the switch stays on while you are
-     reading the AVD list. Turning it off **blanks the screen** rather than
-     closing anything: the panel (or side bar), the AVDs view and these switches
-     all stay put, and clicking Panel again brings the mirror back.
+     screen. That is why the row menu only offers the switches on the AVD the
+     mirror is showing; ticking a surface for another AVD is refused with a
+     message naming the AVD in the way.
+   - The ticks follow reality: close the editor tab by hand and its tick clears.
+     **Panel** means the mirror is being drawn into the AVD Mirror container —
+     either of its tabs counts, so the switch stays on while you are reading the
+     AVD list. Turning it off **blanks the screen** rather than closing anything:
+     the panel (or side bar), the AVDs view and this menu all stay put, and
+     ticking Panel again brings the mirror back.
    - **Browser** cannot be closed by VS Code: turning it off stops the extension
      counting that tab as shown, nothing more. **Embedded Browser** is the same
      page framed inside an editor tab, so it stays inside VS Code and turning it
      off really does close the tab.
-   - `AVD Mirror: Choose Where to Show` (Command Palette) offers the same
-     switches for the current AVD as one multi-select, so "panel and browser, but
-     no editor tab" is a state you can hold.
+   - `AVD Mirror: Choose Where to Show` (Command Palette) opens the same list for
+     the AVD the mirror is showing, so the keyboard route and the row menu cannot
+     drift apart.
    - The same menu carries **Hide Emulator Window** (or **Show Emulator Window**
      once it is parked), so the real emulator can be taken off the desktop
      without leaving the AVD row. It is offered only on a running AVD, because a

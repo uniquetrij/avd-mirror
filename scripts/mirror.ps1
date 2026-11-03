@@ -1277,7 +1277,7 @@ $html = @'
     strip already. */
  #barrow{display:flex;align-items:stretch;background:var(--tb-bg);border-bottom:1px solid var(--tb-border)}
  #bar{flex:1 1 auto;min-width:64px;padding:6px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
- #m{flex:1;min-height:0;object-fit:contain;background:var(--bezel);cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none}
+ #m{flex:1;min-height:0;object-fit:contain;background:var(--bezel);cursor:crosshair;user-select:none;-webkit-user-select:none;touch-action:none;outline:none}
  /* The captured frame is not a clean rectangle: the emulator's device skin
     rounds the display's bottom two corners, so a light arc sits *inside* the
     frame at each of them and the screen reads as rounded where it should be a
@@ -1600,7 +1600,15 @@ $html = @'
        long multi-line popup over the mirrored screen, and it covered the very
        content it was describing. The `alt` text still names the image for
        assistive technology. -->
-  <img id="m" alt="emulator screen"/>
+  <!-- tabindex exists for the embedded surface's sake: pointerdown calls
+       preventDefault() to keep selection and drags out of the gesture, which also
+       suppresses the browser's own focus transfer, so img.focus() is the only
+       thing that can put keyboard focus here - and an untabbable <img> ignores it.
+       On the page's own tab the document already has focus, so this changed
+       nothing; framed inside the Embedded Browser, a click without it left focus
+       in the parent webview document and every keystroke missed the keydown
+       handler (typing did nothing there, while every other surface worked). -->
+  <img id="m" tabindex="-1" alt="emulator screen"/>
      <!-- Square the display's bottom corners; see .sqcorner. -->
      <canvas id="sqL" class="sqcorner" aria-hidden="true"></canvas>
      <canvas id="sqR" class="sqcorner" aria-hidden="true"></canvas>

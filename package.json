@@ -2,7 +2,7 @@
   "name": "avd-mirror",
   "displayName": "AVD Mirror",
   "description": "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
-  "version": "0.3.39",
+  "version": "0.3.42",
   "publisher": "uniquetrij",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -79,54 +79,6 @@
         "title": "Choose Where to Show",
         "category": "AVD Mirror",
         "icon": "$(multiple-windows)"
-      },
-      {
-        "command": "avdMirror.showInPanel",
-        "title": "Show Mirror in Panel",
-        "category": "AVD Mirror",
-        "icon": "$(layout-panel)"
-      },
-      {
-        "command": "avdMirror.hideFromPanel",
-        "title": "Hide Mirror from Panel",
-        "category": "AVD Mirror",
-        "icon": "$(layout-panel-off)"
-      },
-      {
-        "command": "avdMirror.showInEditor",
-        "title": "Show Mirror in Editor Tab",
-        "category": "AVD Mirror",
-        "icon": "$(screen-full)"
-      },
-      {
-        "command": "avdMirror.hideFromEditor",
-        "title": "Hide Mirror from Editor Tab",
-        "category": "AVD Mirror",
-        "icon": "$(screen-normal)"
-      },
-      {
-        "command": "avdMirror.showInBrowser",
-        "title": "Show Mirror in Browser",
-        "category": "AVD Mirror",
-        "icon": "$(globe)"
-      },
-      {
-        "command": "avdMirror.hideFromBrowser",
-        "title": "Hide Mirror from Browser",
-        "category": "AVD Mirror",
-        "icon": "$(circle-slash)"
-      },
-      {
-        "command": "avdMirror.showInEmbedded",
-        "title": "Show Mirror in Embedded Browser",
-        "category": "AVD Mirror",
-        "icon": "$(browser)"
-      },
-      {
-        "command": "avdMirror.hideFromEmbedded",
-        "title": "Hide Mirror from Embedded Browser",
-        "category": "AVD Mirror",
-        "icon": "$(preview)"
       },
       {
         "command": "avdMirror.start",
@@ -222,22 +174,6 @@
       ],
       "commandPalette": [
         {
-          "command": "avdMirror.hideFromPanel",
-          "when": "false"
-        },
-        {
-          "command": "avdMirror.hideFromEditor",
-          "when": "false"
-        },
-        {
-          "command": "avdMirror.hideFromBrowser",
-          "when": "false"
-        },
-        {
-          "command": "avdMirror.hideFromEmbedded",
-          "when": "false"
-        },
-        {
           "command": "avdMirror.hideEmulatorWindow",
           "when": "false"
         },
@@ -248,54 +184,19 @@
       ],
       "view/item/context": [
         {
-          "command": "avdMirror.showInPanel",
-          "when": "view == avdMirror.avds && (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) && !avdMirror.shown.panel",
+          "command": "avdMirror.toggleDisplay",
+          "when": "view == avdMirror.avds && (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored)",
           "group": "2_display@1"
-        },
-        {
-          "command": "avdMirror.hideFromPanel",
-          "when": "view == avdMirror.avds && (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) && avdMirror.shown.panel",
-          "group": "2_display@1"
-        },
-        {
-          "command": "avdMirror.showInEditor",
-          "when": "view == avdMirror.avds && (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) && !avdMirror.shown.editor",
-          "group": "2_display@2"
-        },
-        {
-          "command": "avdMirror.hideFromEditor",
-          "when": "view == avdMirror.avds && (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) && avdMirror.shown.editor",
-          "group": "2_display@2"
-        },
-        {
-          "command": "avdMirror.showInBrowser",
-          "when": "view == avdMirror.avds && (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) && !avdMirror.shown.browser",
-          "group": "2_display@3"
-        },
-        {
-          "command": "avdMirror.hideFromBrowser",
-          "when": "view == avdMirror.avds && (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) && avdMirror.shown.browser",
-          "group": "2_display@3"
-        },
-        {
-          "command": "avdMirror.showInEmbedded",
-          "when": "view == avdMirror.avds && (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) && !avdMirror.shown.embedded",
-          "group": "2_display@4"
-        },
-        {
-          "command": "avdMirror.hideFromEmbedded",
-          "when": "view == avdMirror.avds && (viewItem == avdRunningMirrored || viewItem == avdIdleMirrored) && avdMirror.shown.embedded",
-          "group": "2_display@4"
         },
         {
           "command": "avdMirror.hideEmulatorWindow",
           "when": "view == avdMirror.avds && (viewItem == avdRunning || viewItem == avdRunningMirrored) && !avdMirror.emulatorHidden",
-          "group": "2_display@5"
+          "group": "2_display@2"
         },
         {
           "command": "avdMirror.showEmulatorWindow",
           "when": "view == avdMirror.avds && (viewItem == avdRunning || viewItem == avdRunningMirrored) && avdMirror.emulatorHidden",
-          "group": "2_display@5"
+          "group": "2_display@2"
         },
         {
           "command": "avdMirror.selectAvd",

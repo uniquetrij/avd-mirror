@@ -5,6 +5,38 @@ Notable changes to **AVD Mirror**. This project follows
 the minor version changes for anything that alters how the extension behaves,
 the patch version for fixes.
 
+## 0.3.42
+
+- **The row menu's surface switches are one entry that opens a ticked list.**
+  VS Code builds a context-menu row from a check span and a plain text label, so
+  it draws neither a contributed codicon nor a tick — the eight `Show Mirror
+  in …` / `Hide Mirror from …` entries could not show which surface was on.
+  The AVD row's menu now offers **Choose Where to Show**, which opens the four
+  surfaces — Panel, Editor Tab, Browser, Embedded Browser — as one multi-select
+  with their real codicons and a tick for every surface that is on screen right
+  now. Tick two to have the mirror in both places, untick one to close it; only
+  the difference is applied, so nothing already open is re-fetched. The same
+  command and the same list serve the Command Palette, and the eight per-surface
+  commands (and the context keys they were gated on) are gone with the entries
+  that needed them.
+- **No more stand-in characters in menu labels.** The previous preview build led
+  each entry with a geometric glyph (`▤`, `◉`, `◆`) because a menu row cannot draw
+  an icon; with the list carrying the codicons, every label is plain text again.
+
+## 0.3.40
+
+- **Typing works in the Embedded Browser surface.** The framed page starts
+  without keyboard focus, and the pointer handler's `preventDefault()` — there to
+  keep text selection and native drags out of a gesture — also cancels the
+  browser's default focus transfer. The only remaining call, `img.focus()`, did
+  nothing because an `<img>` without a `tabindex` is not focusable, so focus
+  stayed in the webview around the frame and every keystroke missed the page's
+  `keydown` listener. The screen image is now focusable (`tabindex="-1"`, still
+  out of the tab order), so clicking the mirror — the first thing a gesture does
+  anyway — moves focus into the frame and typing reaches the guest. The other
+  three surfaces were never affected: there the page *is* the document, so it
+  already had focus.
+
 ## 0.3.39
 
 - **A hidden emulator stays hidden.** Parking was recorded as an observation

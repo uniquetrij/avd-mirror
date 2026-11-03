@@ -13,6 +13,10 @@ const mk = (name) => (...a) => { calls.push([name, ...a]); return undefined; };
 // well as from the Screen webview view, because both share the Panel container.
 const viewState = { treeVisible: true };
 
+// Scripted answers for the surface picker, one per invocation, so a test can tick
+// exactly the surfaces it wants instead of accepting whatever comes first.
+const quickPickAnswers = [];
+
 class EventEmitter {
   constructor() { this.handlers = []; this.event = (h) => { this.handlers.push(h); return { dispose() {} }; }; }
   fire(x) { for (const h of this.handlers) h(x); }
@@ -67,9 +71,12 @@ const vscodeMock = {
     setStatusBarMessage: mk('setStatusBarMessage'),
     withProgress: async (opts, fn) => { calls.push(['withProgress', opts.title]); return fn(); },
     showQuickPick: async (items, opts) => {
-      calls.push(['showQuickPick', opts && opts.title]);
-      // Default to the first (preferred) option, as a user accepting the default
-      // would, so the code path under test is the ordinary one.
+      calls.push(['showQuickPick', opts && opts.title, items]);
+      // A scripted answer, for the multi-select picker: it receives the real
+      // items and returns the ones a user would have ticked.
+      if (quickPickAnswers.length) return quickPickAnswers.shift()(items);
+      // Otherwise default to the first (preferred) option, as a user accepting
+      // the default would, so the code path under test is the ordinary one.
       return items[0];
     },
     registerTreeDataProvider: () => ({ dispose() {} }),
@@ -236,9 +243,9 @@ const ext = require('./extension.js');
       console.log(`  item "${item.label}" desc="${item.description}" icon=${item.iconPath.id} color=${item.iconPath.color ? item.iconPath.color.id : 'none'} ctx=${item.contextValue}`);
     }
 
-    // The surface switches are inline actions on the AVD row itself, so a row
-    // has nothing to expand, and only the mirrored AVD's row carries them - its
-    // context value gets a `Mirrored` suffix, which is what the menus gate on.
+    // The surface switches are menu entries on the AVD row itself, so a row has
+    // nothing to expand, and only the mirrored AVD's row offers them - its context
+    // value gets a `Mirrored` suffix, which is what the menus gate on.
     const avd = kids.find(k => k && k.name);
     if (avd) {
       const avdItem = tree.getTreeItem(avd);
@@ -252,47 +259,42 @@ const ext = require('./extension.js');
         failures.push(`${other.name}: marked as mirrored too - two rows would offer the switches`);
       }
 
-      // The menu is what the user clicks, so check the contributions: the glyphs
-      // are what make a switch look on or off, and a pair with one half missing
-      // is an icon that never changes. The switches live in the row menu now,
-      // not the inline strip, so the off/on pair is what carries their state.
+      // The menu is what the user clicks, so check the contributions. A context
+      // menu row is a check span plus a plain text label: it can draw neither a
+      // contributed icon nor a tick, which is why the four surfaces are one entry
+      // that opens a picker instead of eight show/hide pairs whose icons and
+      // state characters would never reach the screen.
       const pkg = require(path.join(__dirname, 'package.json'));
       const itemMenuAll = pkg.contributes.menus['view/item/context'] || [];
-      const entries = itemMenuAll.filter(m => /^2_display@/.test(m.group || ''));
-      const icon = {};
-      for (const c of pkg.contributes.commands || []) if (c.icon) icon[c.command] = c.icon;
-      const want = [
-        ['panel', 'Panel', 1, 'layout-panel', 'layout-panel-off'],
-        ['editor', 'Editor', 2, 'screen-full', 'screen-normal'],
-        ['browser', 'Browser', 3, 'globe', 'circle-slash'],
-        ['embedded', 'Embedded', 4, 'browser', 'preview'],
-      ];
-      for (const [key, cap, group, onIcon, offIcon] of want) {
-        const showId = `avdMirror.showIn${cap}`;
-        const hideId = `avdMirror.hideFrom${cap}`;
-        const show = entries.find(m => m.command === showId);
-        const hide = entries.find(m => m.command === hideId);
-        if (!show || !hide) { failures.push(`${key}: no show/hide pair in the row menu`); continue; }
-        if (show.group !== `2_display@${group}` || hide.group !== show.group) {
-          failures.push(`${key}: pair split across groups ${show.group}/${hide.group}`);
-        }
-        const inline = itemMenuAll.filter(m => /^inline/.test(m.group || '') && (m.command === showId || m.command === hideId));
-        if (inline.length) failures.push(`${key}: still pinned inline (${inline[0].group}) - the switches belong in the row menu`);
-        const when = (show.when || '') + ' ' + (hide.when || '');
+      const commands = pkg.contributes.commands || [];
+      const picker = itemMenuAll.find(m => m.command === 'avdMirror.toggleDisplay');
+      if (!picker) failures.push('the row menu lost the surface picker');
+      else {
+        if (picker.group !== '2_display@1') failures.push(`picker: expected group 2_display@1, got ${picker.group}`);
+        const when = picker.when || '';
         if (!/viewItem == avdRunningMirrored/.test(when) || !/viewItem == avdIdleMirrored/.test(when)) {
-          failures.push(`${key}: not limited to the mirrored row (${when})`);
+          failures.push(`picker: not limited to the mirrored row (${when})`);
         }
-        if (!/!avdMirror\.shown\./.test(show.when || '')) failures.push(`${key}: show not gated on the surface being off (${show.when})`);
-        if (!/(^|[^!])avdMirror\.shown\./.test(hide.when || '')) failures.push(`${key}: hide not gated on the surface being on (${hide.when})`);
-        if (icon[showId] !== '$(' + onIcon + ')') failures.push(`${key}: show icon ${icon[showId]} is not $(${onIcon})`);
-        if (icon[hideId] !== '$(' + offIcon + ')') failures.push(`${key}: hide icon ${icon[hideId]} is not $(${offIcon})`);
       }
+      // No per-surface entry is left, and no label carries a stand-in character:
+      // a glyph in a label is a picture of an icon that VS Code would draw
+      // properly anywhere else.
+      const strays = itemMenuAll.filter(m => /^2_display@/.test(m.group || '')
+        && m.command !== 'avdMirror.toggleDisplay' && !/EmulatorWindow$/.test(m.command || ''));
+      if (strays.length) failures.push(`per-surface entries back in the row menu: ${strays.map(m => m.command).join(', ')}`);
+      for (const c of commands) {
+        if (/[^\x20-\x7e]/.test(c.title || '')) failures.push(`${c.command}: label carries a glyph ("${c.title}")`);
+      }
+      // Two commands per surface existed only because a menu entry's icon could
+      // not change with its state. The picker ticks instead, so they are gone.
+      const pairs = commands.filter(c => /avdMirror\.(showIn|hideFrom)/.test(c.command));
+      if (pairs.length) failures.push(`state-pair commands still contributed: ${pairs.map(c => c.command).join(', ')}`);
 
       // The AVDs title bar is down to Refresh: nothing that means one AVD lives
       // in the header, because a title-bar entry gets no item and can only act
       // on "whatever the mirror happens to show".
       const title = pkg.contributes.menus['view/title'] || [];
-      const stray = title.filter(m => /avdMirror\.(showIn|hideFrom|startAvd|stopAvd|forceStopAvd)/.test(m.command || ''));
+      const stray = title.filter(m => /avdMirror\.(startAvd|stopAvd|forceStopAvd)/.test(m.command || ''));
       if (stray.length) failures.push(`title bar still carries per-command buttons: ${stray.map(m => m.command).join(', ')}`);
       if (!title.some(m => m.command === 'avdMirror.refreshAvds')) failures.push('title bar lost avdMirror.refreshAvds');
 
@@ -318,10 +320,9 @@ const ext = require('./extension.js');
         failures.push(`inline strip should hold only start/stop, has ${inlineStrip.map(m => m.command).join(', ')}`);
       }
 
-      // The emulator's own window is a show/hide pair in the same section as the
-      // surfaces: the row menu lists only the direction that applies, so the pair
-      // must be gated on its own state key, and only a running AVD has a window
-      // to move.
+      // The emulator's own window is the second entry in that section: the row
+      // menu lists only the direction that applies, so the pair must be gated on
+      // its own state key, and only a running AVD has a window to move.
       const emu = [
         ['avdMirror.hideEmulatorWindow', /!avdMirror\.emulatorHidden/, '$(eye-closed)', 'not-yet-hidden'],
         ['avdMirror.showEmulatorWindow', /(^|[^!])avdMirror\.emulatorHidden/, '$(eye)', 'hidden'],
@@ -329,7 +330,7 @@ const ext = require('./extension.js');
       for (const [cmd, gate, glyph, side] of emu) {
         const m = itemMenu.find(x => x.command === cmd);
         if (!m) { failures.push(`${cmd}: not offered on the row`); continue; }
-        if (m.group !== '2_display@5') failures.push(`${cmd}: expected group 2_display@5, got ${m.group}`);
+        if (m.group !== '2_display@2') failures.push(`${cmd}: expected group 2_display@2, got ${m.group}`);
         if (!/viewItem == avdRunning/.test(m.when || '')) failures.push(`${cmd}: offered on an AVD with no window (${m.when})`);
         if (!gate.test(m.when || '')) failures.push(`${cmd}: not gated on the ${side} state (${m.when})`);
         const declared = (pkg.contributes.commands || []).find(c => c.command === cmd);
@@ -339,77 +340,94 @@ const ext = require('./extension.js');
       }
       if (!itemMenu.some(m => m.command === 'avdMirror.hideEmulatorWindow')) failures.push('the row menu lost the emulator window switch');
 
-      // Regression: the panel switch reported "hidden" whenever the Screen view
-      // was not the active tab - i.e. every time the user could actually see the
-      // switch - so flipping it looked like nothing happened. Both views share
-      // the Panel container, so either one being visible means the panel is open.
-      const ctxValue = (target = 'panel') => {
-        const last = calls.filter(c => c[0] === 'executeCommand' && c[1] === 'setContext' && c[2] === `avdMirror.shown.${target}`).pop();
-        return last ? last[3] : undefined;
+      // The picker is the only way in, so drive it the way a user does: it is
+      // handed the real items and answers with the ones ticked. Its codicons and
+      // ticks are checked on the way past, since a context-menu row can carry
+      // neither.
+      const row = { name: avd.name };
+      const pick = async (arg, ...keys) => {
+        quickPickAnswers.push(items => items.filter(i => keys.includes(i.key)));
+        const seen = calls.filter(c => c[0] === 'showQuickPick').length;
+        await run('avdMirror.toggleDisplay')(arg);
+        const made = calls.filter(c => c[0] === 'showQuickPick')[seen];
+        return made ? { title: made[1], items: made[2] } : { title: '', items: [] };
       };
-      // The context keys are written from getChildren(), so ask the tree to
-      // render before reading them back.
       const sync = () => tree.getChildren();
+      const errsBefore = calls.filter(c => c[0] === 'showErrorMessage').length;
       await sync();
-      if (ctxValue() !== true) failures.push(`panel: expected avdMirror.shown.panel=true, got ${ctxValue()}`);
-      viewState.treeVisible = false;
-      await sync();
-      if (ctxValue() !== false) failures.push(`panel: expected avdMirror.shown.panel=false once no view is visible, got ${ctxValue()}`);
-      viewState.treeVisible = true;
-      await sync();
-      if (ctxValue() !== true) failures.push(`panel: expected the switch to come back, got ${ctxValue()}`);
 
-      // Hiding blanks the mirror in place: it must not close the part, which
-      // would take the AVDs view - and these switches - with it. Invoked with the
-      // TreeView, as the title bar does.
-      await run('avdMirror.hideFromPanel')(treeView);
-      await sync();
-      const closed = calls.filter(c => c[0] === 'executeCommand' && String(c[1]).startsWith('workbench.action.close'));
-      if (closed.length) failures.push(`hideFromPanel: closed a part (${closed.map(c => c[1]).join(',')})`);
-      if (!viewState.treeVisible) failures.push('hideFromPanel: the AVDs view was hidden with it');
-      if (ctxValue() !== false) failures.push(`hideFromPanel: context still true`);
+      // Every surface is listed, with the icon a menu row cannot draw and a tick
+      // that reports what is on screen right now.
+      const opened = await pick(row, 'panel');
+      if (opened.items.length !== 4) failures.push(`picker: expected 4 surfaces, got ${opened.items.length}`);
+      if (!new RegExp(`show ${avd.name} in`).test(opened.title || '')) {
+        failures.push(`picker: title does not name the row's AVD (${opened.title})`);
+      }
+      for (const item of opened.items) {
+        if (!(item.iconPath instanceof vscodeMock.ThemeIcon)) failures.push(`picker: ${item.key} has no codicon`);
+        if (typeof item.picked !== 'boolean') failures.push(`picker: ${item.key} carries no tick state`);
+      }
+      if (!opened.items.find(i => i.key === 'panel').picked) failures.push('picker: the open panel is not ticked');
+      if (opened.items.find(i => i.key === 'editor').picked) failures.push('picker: the editor tab reads shown with no tab');
+
+      // Turning the panel off blanks the mirror in place: it must not close the
+      // part, which would take the AVDs view - and this menu - with it.
+      const closed = calls.filter(c => c[0] === 'executeCommand' && String(c[1]).startsWith('workbench.action.close')).length;
+      viewState.treeVisible = false;
+      const blanked = await pick(row);
+      viewState.treeVisible = true;
+      if (blanked.items.find(i => i.key === 'panel').picked) failures.push('picker: the panel reads shown with no view visible');
+      if (calls.filter(c => c[0] === 'executeCommand' && String(c[1]).startsWith('workbench.action.close')).length > closed) {
+        failures.push('picker: turning the panel off closed a part');
+      }
+      if (!viewState.treeVisible) failures.push('picker: the AVDs view was hidden with the panel');
 
       // The row form acts on the AVD it names. A surface switched on for an AVD
       // the mirror is not showing would never appear, so it is refused instead of
       // left looking set.
       const warnedBefore = calls.filter(c => c[0] === 'showWarningMessage').length;
-      await run('avdMirror.showInEditor')({ name: 'ghost_avd' });
+      const ghost = await pick({ name: 'ghost_avd' }, 'editor');
       if (calls.filter(c => c[0] === 'showWarningMessage').length === warnedBefore) {
-        failures.push('showInEditor(other AVD): not refused');
+        failures.push('picker(ghost_avd): not refused');
       }
+      if (ghost.items.some(i => i.picked)) failures.push('picker(ghost_avd): listed another AVD\'s surfaces as shown');
       if (panels.some(p => p.viewType === 'avdMirror.editor' && !p.disposed)) {
-        failures.push('showInEditor(other AVD): opened the tab anyway');
+        failures.push('picker(ghost_avd): opened the tab anyway');
       }
 
       // The embedded browser is the one browser surface VS Code owns, so unlike
       // the external Browser switch it can be closed again - and it must close
       // only its own tab.
-      await run('avdMirror.showInEmbedded')(treeView);
+      await pick(row, 'embedded');
       await sync();
-      const emb = panels.filter(p => p.viewType === 'avdMirror.embedded').pop();
-      if (!emb) failures.push('showInEmbedded: no embedded panel');
+      const emb = panels.filter(p => p.viewType === 'avdMirror.embedded' && !p.disposed).pop();
+      if (!emb) failures.push('picker: ticked Embedded Browser and no tab appeared');
       else {
         const html = emb.webview.html || '';
-        if (!/iframe[^>]+src="http:\/\/127\.0\.0\.1:8777\//.test(html)) failures.push('showInEmbedded: the page is not framed from the server');
-        if (!/frame-src[^;"]*127\.0\.0\.1:8777/.test(html)) failures.push('showInEmbedded: frame-src would block the page');
+        if (!/iframe[^>]+src="http:\/\/127\.0\.0\.1:8777\//.test(html)) failures.push('picker: the page is not framed from the server');
+        if (!/frame-src[^;"]*127\.0\.0\.1:8777/.test(html)) failures.push('picker: frame-src would block the page');
       }
-      if (ctxValue('embedded') !== true) failures.push(`showInEmbedded: context not set (${ctxValue('embedded')})`);
-      await run('avdMirror.hideFromEmbedded')(treeView);
+      await pick(row);
       await sync();
-      if (emb && !emb.disposed) failures.push('hideFromEmbedded: panel left open');
-      if (ctxValue('embedded') !== false) failures.push('hideFromEmbedded: context still true');
+      if (emb && !emb.disposed) failures.push('picker: unticking Embedded Browser left the tab open');
+
+      // Every surface above went through setDisplay(), whose failures are
+      // swallowed into an error message - so an errored switch would otherwise
+      // pass as long as it did not throw.
+      const errs = calls.filter(c => c[0] === 'showErrorMessage').slice(errsBefore);
+      if (errs.length) failures.push(`picker: switching surfaces errored (${errs.map(e => e[1]).join(' | ')})`);
     } else {
       failures.push('tree: no AVD row');
     }
 
-    const pairs = [
-      ['showInPanel', 'hideFromPanel'], ['showInEditor', 'hideFromEditor'],
-      ['showInBrowser', 'hideFromBrowser'], ['showInEmbedded', 'hideFromEmbedded'],
-    ];
-    for (const [on, off] of pairs) {
-      if (!run('avdMirror.' + on)) failures.push(`avdMirror.${on}: not registered`);
-      if (!run('avdMirror.' + off)) failures.push(`avdMirror.${off}: not registered`);
+    // The eight pair commands went with the menu entries that needed them: a
+    // registered command with no contribution is a palette entry that opens a
+    // surface the menu no longer offers.
+    for (const gone of ['showInPanel', 'hideFromPanel', 'showInEditor', 'hideFromEditor',
+      'showInBrowser', 'hideFromBrowser', 'showInEmbedded', 'hideFromEmbedded']) {
+      if (run('avdMirror.' + gone)) failures.push(`avdMirror.${gone}: still registered after the picker replaced the pairs`);
     }
+    if (!run('avdMirror.toggleDisplay')) failures.push('avdMirror.toggleDisplay: not registered');
   }
 
   // A server left behind by an older build answers /gsize exactly like a current
