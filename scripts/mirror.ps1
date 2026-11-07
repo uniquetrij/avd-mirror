@@ -57,6 +57,25 @@ function Get-SelectedAvd {
   try { return (Get-Content $SelectedAvdFile -ErrorAction Stop | Select-Object -First 1).Trim() } catch { return '' }
 }
 
+# adb writes routine chatter to stderr ("* daemon not running; starting now at
+# tcp:5037", "error: no devices/emulators found"). Under $ErrorActionPreference =
+# 'Stop', a native command's stderr captured with 2>&1 becomes a *terminating*
+# NativeCommandError, so the first such line threw and that reply (guest size, a
+# nav key, a tap) was lost. Run every external tool through this and its stderr
+# is just text.
+#
+# Defined here, above its first caller: Start-AvdAndWait() runs at startup, when
+# no emulator is running, and a function is only callable once the script has
+# reached its definition. With this further down, the cold start died on
+# "Invoke-Native is not recognized" before the AVD it was there to start.
+function Invoke-Native {
+  param([scriptblock]$Command)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { & $Command 2>&1 | ForEach-Object { [string]$_ } }
+  finally { $ErrorActionPreference = $prev }
+}
+
 # Start an AVD and wait for its window. The wait is generous: a cold AVD boot on
 # this machine measures ~38 s to sys.boot_completed, and the window handle the
 # capture needs appears a little before that.
@@ -143,20 +162,6 @@ $script:SecureAt = [datetime]::MinValue
 # `adb shell input` is single-pointer only, and `sendevent` is SELinux-blocked.
 $adbExe = Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe'
 if (-not (Test-Path $adbExe)) { $adbExe = 'adb' }
-
-# adb writes routine chatter to stderr ("* daemon not running; starting now at
-# tcp:5037", "error: no devices/emulators found"). Under $ErrorActionPreference =
-# 'Stop', a native command's stderr captured with 2>&1 becomes a *terminating*
-# NativeCommandError, so the first such line threw and that reply (guest size, a
-# nav key, a tap) was lost. Run every external tool through this and its stderr
-# is just text.
-function Invoke-Native {
-  param([scriptblock]$Command)
-  $prev = $ErrorActionPreference
-  $ErrorActionPreference = 'Continue'
-  try { & $Command 2>&1 | ForEach-Object { [string]$_ } }
-  finally { $ErrorActionPreference = $prev }
-}
 
 function Invoke-Adb {
   param([string[]]$Arguments)
