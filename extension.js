@@ -724,6 +724,14 @@ function mirrorAvd() {
 let emulatorHidden = false;
 let emulatorStateBusy = false;
 
+// Whether there is a window to move at all. The row's inline icon gates on the
+// item's own `running` state, but a title-bar button has no row to read that
+// from, so it needs the fact as a context key. It comes from the same
+// `/window?state=1` answer as the hidden flag, because that is the only thing
+// that knows a *window* exists - an AVD can be listed as running before its
+// window is up, and the manager's status says nothing about the window at all.
+let emulatorWindow = false;
+
 /**
  * Is our panel surface on screen?
  *
@@ -1550,6 +1558,7 @@ async function moveEmulatorWindow(mode) {
   }
   if (!body.ok) {
     if (body.state === 'no-emulator') {
+      setEmulatorWindow(false);
       setEmulatorHidden(false);
       vscode.window.setStatusBarMessage('AVD Mirror: no emulator window to move', 3000);
     } else {
@@ -1573,6 +1582,13 @@ function setEmulatorHidden(hidden) {
   vscode.commands.executeCommand('setContext', 'avdMirror.emulatorHidden', hidden);
 }
 
+/** Remember whether a window exists to move, and repaint the title bar. */
+function setEmulatorWindow(present) {
+  if (emulatorWindow === present) return;
+  emulatorWindow = present;
+  vscode.commands.executeCommand('setContext', 'avdMirror.emulatorWindow', present);
+}
+
 /**
  * Ask the server where the emulator window is, before the tree renders.
  *
@@ -1587,7 +1603,11 @@ async function syncEmulatorHidden() {
   try {
     const res = await fetch(`http://${HOST}:${PORT}/window?state=1`, { cache: 'no-store' });
     const body = await res.json();
-    setEmulatorHidden(body.state === 'no-emulator' ? false : !!body.hidden);
+    // `no-emulator` is the only answer that means the window is gone; anything
+    // else (`shown`, `hidden`, even a `failed:` move) means it is there to move.
+    const present = body.state !== 'no-emulator';
+    setEmulatorWindow(present);
+    setEmulatorHidden(present ? !!body.hidden : false);
   } catch (e) {
     // Server not up (or mid-restart): keep whatever we last knew.
   } finally {
@@ -1664,10 +1684,12 @@ function activate(context) {
   avdTreeRef = avdTree;
   context.subscriptions.push({ dispose: () => avdTree.stop() });
 
-  // Define the gate the emulator's hide/show pair reads. An unset context key
+  // Define the gates the emulator's hide/show pair reads. An unset context key
   // matches `!key` but not `key`, which would silently drop the "Show" entry
-  // until the first poll answers.
+  // until the first poll answers. `emulatorWindow` is the one a title-bar button
+  // has to read: unlike a row it has no AVD to ask whether anything is running.
   vscode.commands.executeCommand('setContext', 'avdMirror.emulatorHidden', false);
+  vscode.commands.executeCommand('setContext', 'avdMirror.emulatorWindow', false);
 
   // The status bar entry point. A Panel container gets no Activity Bar icon, so
   // without this the only way back to the mirror once the panel is closed is the

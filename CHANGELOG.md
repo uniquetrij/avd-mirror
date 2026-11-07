@@ -5,6 +5,20 @@ Notable changes to **AVD Mirror**. This project follows
 the minor version changes for anything that alters how the extension behaves,
 the patch version for fixes.
 
+## 0.3.44
+
+- **Hide/Show Emulator Window moved inline.** It was a right-click entry on the
+  AVD row; it is now an icon on the row itself, next to ▶/⏹, and a button in the
+  AVDs view's title bar. A context-menu row can draw no codicon, so the only way
+  to give it an icon was to stop putting it there. The icons are `$(empty-window)`
+  for **Hide** and `$(window)` for **Show**, swapped by the same
+  `avdMirror.emulatorHidden` context key the menu already used.
+- The title bar needed a second gate. A row knows whether its AVD is running from
+  the item's own state, but a title-bar button has no row: without one it offered
+  to hide a window that was not there. `avdMirror.emulatorWindow` now carries the
+  server's `/window?state=1` answer (`no-emulator` is the only value that means
+  the window is gone), set from the same poll that already tracks the hidden flag.
+
 ## 0.3.43
 
 - **New option: honour `FLAG_SECURE`.** Off by default, because mirroring a

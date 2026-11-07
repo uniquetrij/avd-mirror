@@ -305,7 +305,7 @@ const ext = require('./extension.js');
       // a glyph in a label is a picture of an icon that VS Code would draw
       // properly anywhere else.
       const strays = itemMenuAll.filter(m => /^2_display@/.test(m.group || '')
-        && m.command !== 'avdMirror.toggleDisplay' && !/EmulatorWindow$/.test(m.command || ''));
+        && m.command !== 'avdMirror.toggleDisplay');
       if (strays.length) failures.push(`per-surface entries back in the row menu: ${strays.map(m => m.command).join(', ')}`);
       for (const c of commands) {
         if (/[^\x20-\x7e]/.test(c.title || '')) failures.push(`${c.command}: label carries a glyph ("${c.title}")`);
@@ -315,13 +315,24 @@ const ext = require('./extension.js');
       const pairs = commands.filter(c => /avdMirror\.(showIn|hideFrom)/.test(c.command));
       if (pairs.length) failures.push(`state-pair commands still contributed: ${pairs.map(c => c.command).join(', ')}`);
 
-      // The AVDs title bar is down to Refresh: nothing that means one AVD lives
-      // in the header, because a title-bar entry gets no item and can only act
-      // on "whatever the mirror happens to show".
+      // The AVDs title bar carries Refresh, and the emulator window's switch: a
+      // title-bar button gets no item, so nothing that means one *AVD* may live
+      // there (start/stop/force-stop would act on "whatever the mirror happens to
+      // show"), but moving the emulator window is a property of the machine, not
+      // of a row.
       const title = pkg.contributes.menus['view/title'] || [];
       const stray = title.filter(m => /avdMirror\.(startAvd|stopAvd|forceStopAvd)/.test(m.command || ''));
       if (stray.length) failures.push(`title bar still carries per-command buttons: ${stray.map(m => m.command).join(', ')}`);
       if (!title.some(m => m.command === 'avdMirror.refreshAvds')) failures.push('title bar lost avdMirror.refreshAvds');
+      for (const cmd of ['avdMirror.hideEmulatorWindow', 'avdMirror.showEmulatorWindow']) {
+        const m = title.find(x => x.command === cmd);
+        if (!m) { failures.push(`${cmd}: not in the title bar`); continue; }
+        if (!/view == avdMirror\.avds/.test(m.when || '')) failures.push(`${cmd}: title-bar entry is on the wrong view (${m.when})`);
+        // The header has no row to read "is anything running" from, so the gate
+        // has to be the window's own key - otherwise the button offers to hide a
+        // window that is not there.
+        if (!/avdMirror\.emulatorWindow/.test(m.when || '')) failures.push(`${cmd}: title bar is not gated on a window existing (${m.when})`);
+      }
 
       // Power is a button on the row, in the first inline slot, gated so a start
       // only appears on a stopped AVD and a stop only on a running one. Force
@@ -341,21 +352,24 @@ const ext = require('./extension.js');
       const force = itemMenu.find(x => x.command === 'avdMirror.forceStopAvd');
       if (force && /inline/.test(force.group || '')) failures.push(`forceStopAvd: inline (${force.group}) - too easy to hit next to Stop`);
       const inlineStrip = itemMenu.filter(m => /^inline@/.test(m.group || ''));
-      if (inlineStrip.length !== 2 || inlineStrip.some(m => !/^avdMirror\.(start|stop)Avd$/.test(m.command))) {
-        failures.push(`inline strip should hold only start/stop, has ${inlineStrip.map(m => m.command).join(', ')}`);
+      if (inlineStrip.length !== 4 || inlineStrip.some(m => !/^avdMirror\.(start|stop)Avd$/.test(m.command)
+        && !/^avdMirror\.(hide|show)EmulatorWindow$/.test(m.command))) {
+        failures.push(`inline strip should hold only power and the window switch, has ${inlineStrip.map(m => m.command).join(', ')}`);
       }
 
-      // The emulator's own window is the second entry in that section: the row
-      // menu lists only the direction that applies, so the pair must be gated on
-      // its own state key, and only a running AVD has a window to move.
+      // The emulator's own window is an icon on the row (a context-menu row can
+      // draw no codicon, which is the whole reason it moved there) and the same
+      // button in the title bar. Both list only the direction that applies, so
+      // the pair must be gated on its own state key, and only a running AVD has
+      // a window to move.
       const emu = [
-        ['avdMirror.hideEmulatorWindow', /!avdMirror\.emulatorHidden/, '$(eye-closed)', 'not-yet-hidden'],
-        ['avdMirror.showEmulatorWindow', /(^|[^!])avdMirror\.emulatorHidden/, '$(eye)', 'hidden'],
+        ['avdMirror.hideEmulatorWindow', /!avdMirror\.emulatorHidden/, '$(empty-window)', 'not-yet-hidden'],
+        ['avdMirror.showEmulatorWindow', /(^|[^!])avdMirror\.emulatorHidden/, '$(window)', 'hidden'],
       ];
       for (const [cmd, gate, glyph, side] of emu) {
         const m = itemMenu.find(x => x.command === cmd);
         if (!m) { failures.push(`${cmd}: not offered on the row`); continue; }
-        if (m.group !== '2_display@2') failures.push(`${cmd}: expected group 2_display@2, got ${m.group}`);
+        if (m.group !== 'inline@2') failures.push(`${cmd}: expected group inline@2, got ${m.group}`);
         if (!/viewItem == avdRunning/.test(m.when || '')) failures.push(`${cmd}: offered on an AVD with no window (${m.when})`);
         if (!gate.test(m.when || '')) failures.push(`${cmd}: not gated on the ${side} state (${m.when})`);
         const declared = (pkg.contributes.commands || []).find(c => c.command === cmd);
@@ -363,7 +377,17 @@ const ext = require('./extension.js');
         const palette = (pkg.contributes.menus.commandPalette || []).find(x => x.command === cmd);
         if (!palette || palette.when !== 'false') failures.push(`${cmd}: listed in the palette - the state-aware pair belongs on a row, the palette keeps the toggle`);
       }
-      if (!itemMenu.some(m => m.command === 'avdMirror.hideEmulatorWindow')) failures.push('the row menu lost the emulator window switch');
+      if (!itemMenu.some(m => m.command === 'avdMirror.hideEmulatorWindow')) failures.push('the row lost the emulator window switch');
+
+      // The title bar's gate is only as good as the key behind it: it has to be
+      // set from the server's own answer, and only a boolean closes it.
+      const windowCtx = calls.filter(c => c[0] === 'executeCommand'
+        && c[1] === 'setContext' && c[2] === 'avdMirror.emulatorWindow').pop();
+      if (win && !windowCtx) {
+        failures.push('avdMirror.emulatorWindow is never set - the title-bar button would never appear');
+      } else if (windowCtx && typeof windowCtx[3] !== 'boolean') {
+        failures.push(`avdMirror.emulatorWindow is not a boolean (${JSON.stringify(windowCtx[3])})`);
+      }
 
       // The picker is the only way in, so drive it the way a user does: it is
       // handed the real items and answers with the ones ticked. Its codicons and

@@ -2,7 +2,7 @@
   "name": "avd-mirror",
   "displayName": "AVD Mirror",
   "description": "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
-  "version": "0.3.43",
+  "version": "0.3.44",
   "publisher": "uniquetrij",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -109,13 +109,13 @@
         "command": "avdMirror.hideEmulatorWindow",
         "title": "Hide Emulator Window",
         "category": "AVD Mirror",
-        "icon": "$(eye-closed)"
+        "icon": "$(empty-window)"
       },
       {
         "command": "avdMirror.showEmulatorWindow",
         "title": "Show Emulator Window",
         "category": "AVD Mirror",
-        "icon": "$(eye)"
+        "icon": "$(window)"
       },
       {
         "command": "avdMirror.startAvd",
@@ -176,6 +176,16 @@
           "command": "avdMirror.refreshAvds",
           "when": "view == avdMirror.avds",
           "group": "navigation@1"
+        },
+        {
+          "command": "avdMirror.hideEmulatorWindow",
+          "when": "view == avdMirror.avds && avdMirror.emulatorWindow && !avdMirror.emulatorHidden",
+          "group": "navigation@2"
+        },
+        {
+          "command": "avdMirror.showEmulatorWindow",
+          "when": "view == avdMirror.avds && avdMirror.emulatorWindow && avdMirror.emulatorHidden",
+          "group": "navigation@2"
         }
       ],
       "commandPalette": [
@@ -197,12 +207,12 @@
         {
           "command": "avdMirror.hideEmulatorWindow",
           "when": "view == avdMirror.avds && (viewItem == avdRunning || viewItem == avdRunningMirrored) && !avdMirror.emulatorHidden",
-          "group": "2_display@2"
+          "group": "inline@2"
         },
         {
           "command": "avdMirror.showEmulatorWindow",
           "when": "view == avdMirror.avds && (viewItem == avdRunning || viewItem == avdRunningMirrored) && avdMirror.emulatorHidden",
-          "group": "2_display@2"
+          "group": "inline@2"
         },
         {
           "command": "avdMirror.selectAvd",
