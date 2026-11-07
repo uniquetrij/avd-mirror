@@ -534,6 +534,9 @@ async function startServer() {
     const have = info && info.build;
     if (have === want) {
       output.appendLine('mirror server already listening');
+      // A server that was started before this setting existed still needs the
+      // policy, and one started by another window may hold a stale copy of it.
+      await pushFlagSecure();
       return;
     }
     // No /build at all means the process predates the handshake, which is the
@@ -601,6 +604,7 @@ async function startServer() {
       await new Promise(r => setTimeout(r, 250));
       if (await isUp()) {
               output.appendLine('mirror server ready');
+              await pushFlagSecure();
               vscode.commands.executeCommand('avdMirror.reload');
               return;
             }
@@ -650,9 +654,13 @@ async function loadPage() {
     if (b >= 0 && e > b) bodyHtml = html.slice(b + 6, e);
     html = styles + bodyHtml;
     // The page addresses its own endpoints with root-relative paths ('/touch',
-    // '/input', '/gsize', '/frame.jpg'). Inlined into a webview those would
-    // resolve against the webview origin and 404, so point them at the server.
-    html = html.replace(/(['"])\/(touch|input|gsize|window|frame\.jpg)\b/g, `$1${base}/$2`);
+    // '/input', '/gsize', '/rot', '/frame.jpg'). Inlined into a webview those
+    // would resolve against the webview origin and 404, so point them at the
+    // server. '/rot' was missing from this list, so the inlined panel never got
+    // the guest's size, orientation or capturer state from the server - it fell
+    // back to the portrait defaults until the first frame arrived, and the
+    // FLAG_SECURE verdict (which only rides on /rot) never reached it at all.
+    html = html.replace(/(['"])\/(touch|input|gsize|window|rot|secure|frame\.jpg)\b/g, `$1${base}/$2`);
     return html;
 }
 
@@ -1587,6 +1595,62 @@ async function syncEmulatorHidden() {
   }
 }
 
+/**
+ * Hand the FLAG_SECURE policy to the mirror server.
+ *
+ * The policy lives in one place - the server - because every surface shows the
+ * same page, and a surface that could disagree would be a surface that leaks.
+ * The frames come straight from the capturer, so the page is what blanks
+ * itself; the server is what tells it to.
+ */
+async function pushFlagSecure() {
+  const on = vscode.workspace.getConfiguration('avdMirror').get('honourFlagSecure', false);
+  try {
+    const res = await fetch(`http://${HOST}:${PORT}/secure?honour=${on ? 1 : 0}`, { cache: 'no-store' });
+    const body = await res.json();
+    output.appendLine(`FLAG_SECURE: honour=${body.honour} secure=${body.secure}`);
+  } catch (e) {
+    // Server not up yet, or mid-restart: startServer() pushes again once it is.
+    output.appendLine(`FLAG_SECURE: not pushed (${e && e.message ? e.message : e})`);
+  }
+}
+
+/**
+ * Turn "honour FLAG_SECURE" on or off.
+ *
+ * A setting on its own is buried in the Settings UI, and the palette cannot
+ * show a tick on a command, so the state is read from a two-row picker - the
+ * same shape as the surface picker, for the same reason.
+ */
+async function chooseFlagSecure() {
+  const cfg = vscode.workspace.getConfiguration('avdMirror');
+  const on = cfg.get('honourFlagSecure', false);
+  const items = [
+    {
+      label: 'Honour FLAG_SECURE', iconPath: new vscode.ThemeIcon('lock'),
+      description: 'blank the mirror while the window in front refuses screenshots',
+      detail: 'Matches what a screenshot of the guest would show.',
+      picked: on, value: true,
+    },
+    {
+      label: 'Ignore FLAG_SECURE', iconPath: new vscode.ThemeIcon('unlock'),
+      description: 'mirror secure windows like any other (the default)',
+      detail: 'The capture is host-side, so nothing on screen is hidden.',
+      picked: !on, value: false,
+    },
+  ];
+  const pick = await vscode.window.showQuickPick(items, {
+    title: 'AVD Mirror: FLAG_SECURE',
+    placeHolder: on ? 'currently honouring FLAG_SECURE' : 'currently ignoring FLAG_SECURE',
+  });
+  if (!pick) return;
+  await cfg.update('honourFlagSecure', pick.value, vscode.ConfigurationTarget.Global);
+  // pushFlagSecure() runs from onDidChangeConfiguration, which update() fires.
+  vscode.window.setStatusBarMessage(
+    `AVD Mirror: ${pick.value ? 'honouring' : 'ignoring'} FLAG_SECURE`, 4000
+  );
+}
+
 function activate(context) {
   // Activation is also onStartupFinished, so that the status bar entry point
   // exists before the panel has ever been opened - it replaces the Activity Bar
@@ -1669,7 +1733,17 @@ function activate(context) {
     vscode.commands.registerCommand('avdMirror.hideEmulatorWindow', () => moveEmulatorWindow(true)),
     vscode.commands.registerCommand('avdMirror.showEmulatorWindow', () => moveEmulatorWindow(false)),
     vscode.commands.registerCommand('avdMirror.toggleHide', () => moveEmulatorWindow('toggle')),
+    vscode.commands.registerCommand('avdMirror.chooseFlagSecure', chooseFlagSecure),
     output
+  );
+
+  // The FLAG_SECURE switch is a setting, so the Settings UI, a keybinding or
+  // another window can change it too - not just the picker. Whatever changed it,
+  // the server has to hear about it.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('avdMirror.honourFlagSecure')) pushFlagSecure();
+    })
   );
 }
 

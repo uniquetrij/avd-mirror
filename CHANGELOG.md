@@ -5,6 +5,34 @@ Notable changes to **AVD Mirror**. This project follows
 the minor version changes for anything that alters how the extension behaves,
 the patch version for fixes.
 
+## 0.3.43
+
+- **New option: honour `FLAG_SECURE`.** Off by default, because mirroring a
+  secure window is the point of a host-side capture. Turned on, the mirror stops
+  showing anything while the window in front of the guest sets `FLAG_SECURE` —
+  the screen is replaced by a "Protected content" notice, and no frame is
+  requested from the capturer while it is up. That is what a screenshot of the
+  guest would give you: `screencap` on Android 14 writes a 0-byte file rather
+  than a black one, and nothing on the guest side can be told to relax the flag
+  (it is enforced in SurfaceFlinger; `ro.secure`/`settings` have no bearing), so
+  the only thing the mirror can do is notice and stop. Note that this covers the
+  **page** only: the capturer is a separate process reading the emulator's host
+  window, so `/frame.jpg` on either port keeps serving live frames while the
+  notice is up. Treat the option as a courtesy to whoever is looking at the
+  mirror, not as protection from anyone else on the machine.
+- The verdict comes from the server (`adb shell dumpsys window`, the focused
+  window's `fl=` line) and rides on the page's existing `/rot` poll as a fifth
+  field; the policy is one setting, `avdMirror.honourFlagSecure`, pushed to the
+  server at `/secure` so every surface obeys the same switch. Detection costs
+  ~75 ms and is cached for a second, and it is only ever run when the option is
+  on — with it off, the check is a single boolean.
+- **The inlined panel now reaches `/rot`.** `loadPage()` rewrites the page's
+  root-relative endpoints to the server's origin before inlining it into a
+  webview, and `/rot` was not on that list: the panel never got the guest's size,
+  orientation or capturer state from the server, and fell back to the portrait
+  defaults until the first frame arrived. The `FLAG_SECURE` verdict only reaches
+  the page through `/rot`, so the panel could not have obeyed it either.
+
 ## 0.3.42
 
 - **The row menu's surface switches are one entry that opens a ticked list.**

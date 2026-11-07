@@ -9,7 +9,9 @@ works even when the emulator window is in the background, fully occluded, or
 showing a `FLAG_SECURE` screen that in-guest capture (scrcppy, `screencap`)
 would return black. Gestures are streamed to the guest as real pointer events,
 so every gesture the emulator understands — tap, hold, drag, swipe, fling,
-pinch, two-finger pan, edge system-nav — behaves as it does on the device.
+pinch, two-finger pan, edge system-nav — behaves as it does on the device. If
+you would rather the mirror respect `FLAG_SECURE`, there is an option for that:
+see [Honouring `FLAG_SECURE`](#honouring-flag_secure).
 
 <!-- Screenshots: drop media/screenshots/{mirror-panel,avds-menu}.png in place
      (see media/screenshots/README.md) and uncomment this block.
@@ -179,6 +181,39 @@ there" made a hide last about a second: the window came back onto the desktop,
 behind everything, with its taskbar entry already deleted — visible only until
 another window covered it, and with the row menu offering **Hide** because the
 server reported what it saw rather than what was asked for.
+
+### Honouring `FLAG_SECURE`
+
+The capture is host-side, so a window that sets `FLAG_SECURE` — a bank, a
+password manager, a checkout — is mirrored like any other. That is deliberate,
+and it is the reason the extension exists: in-guest capture (`scrcpy`,
+`adb shell screencap`) gets nothing from those windows.
+
+If you would rather see what a screenshot would see, turn on **Honour
+FLAG_SECURE**: `AVD Mirror: Honour FLAG_SECURE` in the Command Palette opens a
+two-row list with the setting that is in force ticked, and the setting itself is
+`avdMirror.honourFlagSecure` (default `false`). While it is on and the window in
+front of the guest sets the flag, the mirror shows a **Protected content** notice
+instead of the screen, and it stops asking the capturer for frames until the
+secure window goes away. All four surfaces follow the same switch, because the
+policy is held by the server, not by the page.
+
+What it cannot do is turn the flag off. `FLAG_SECURE` is enforced inside the
+guest — SurfaceFlinger refuses to hand the pixels to a screenshot, and on
+Android 14 `screencap` writes a 0-byte file rather than a black one. No setting
+or property relaxes it (`ro.secure`, `settings list secure`, `wm` — none of them
+have any bearing); only a patched framework on a rooted image would. So the
+choice is between mirroring the window and pretending it is not there, and this
+option is the second.
+
+It is a courtesy to the person looking at the mirror, not a barrier. The notice
+is drawn by the page, so only the page is covered: while it is up,
+`http://127.0.0.1:8777/frame.jpg` and the capturer's
+`http://127.0.0.1:8778/frame.jpg` both keep returning live frames. The capturer
+is a separate process reading the emulator's **host window** through Windows
+Graphics Capture, which never asks Android for anything, so it has no flag to
+honour — and neither does any other process on the machine. Screenshot the panel
+and you get the notice; fetch either endpoint and you get the screen.
 
 ## What the extension does and does not do
 

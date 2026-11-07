@@ -2,7 +2,7 @@
   "name": "avd-mirror",
   "displayName": "AVD Mirror",
   "description": "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
-  "version": "0.3.42",
+  "version": "0.3.43",
   "publisher": "uniquetrij",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -144,6 +144,12 @@
         "command": "avdMirror.selectAvd",
         "title": "Select AVD",
         "category": "AVD Mirror"
+      },
+      {
+        "command": "avdMirror.chooseFlagSecure",
+        "title": "Honour FLAG_SECURE",
+        "category": "AVD Mirror",
+        "icon": "$(lock)"
       }
     ],
     "views": {
@@ -219,6 +225,17 @@
           "group": "3_forcestop"
         }
       ]
+    },
+    "configuration": {
+      "title": "AVD Mirror",
+      "properties": {
+        "avdMirror.honourFlagSecure": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Behave the way a screenshot would: while the window in front of the guest sets `FLAG_SECURE`, stop showing it and blank the mirror instead.\n\nOff by default - the capture is host-side, so secure windows are mirrored like any other. Run **AVD Mirror: Honour FLAG_SECURE** to switch it."
+        }
+      }
     }
   }
 }

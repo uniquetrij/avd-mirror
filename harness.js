@@ -17,6 +17,13 @@ const viewState = { treeVisible: true };
 // exactly the surfaces it wants instead of accepting whatever comes first.
 const quickPickAnswers = [];
 
+// The FLAG_SECURE policy is a setting, so the mock has to hold one. update() only
+// records the write: firing onDidChangeConfiguration from here would make the
+// harness push the policy to whatever mirror server happens to be running, and
+// flip the user's real switch.
+const configStore = { 'avdMirror.honourFlagSecure': false };
+const configUpdates = [];
+
 class EventEmitter {
   constructor() { this.handlers = []; this.event = (h) => { this.handlers.push(h); return { dispose() {} }; }; }
   fire(x) { for (const h of this.handlers) h(x); }
@@ -34,6 +41,7 @@ const vscodeMock = {
   TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
   TreeItemCheckboxState: { Unchecked: 0, Checked: 1 },
   ProgressLocation: { Notification: 15, Window: 10 },
+  ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
   ViewColumn: { Active: -1 },
   StatusBarAlignment: { Left: 1, Right: 2 },
   window: {
@@ -91,7 +99,24 @@ const vscodeMock = {
   // The project folder is the workspace: the extension code sits at its root,
   // so the scripts are found at <workspace>/scripts and the mock exercises the
   // same lookup the real extension uses.
-  workspace: { workspaceFolders: [{ uri: { scheme: 'file', fsPath: path.resolve(__dirname) } }] },
+  workspace: {
+    workspaceFolders: [{ uri: { scheme: 'file', fsPath: path.resolve(__dirname) } }],
+    getConfiguration: (section) => {
+      const id = (key) => (section ? `${section}.${key}` : key);
+      return {
+        get: (key, dflt) => (id(key) in configStore ? configStore[id(key)] : dflt),
+        update: async (key, value, target) => {
+          configUpdates.push([id(key), value, target]);
+          calls.push(['configUpdate', id(key), value, target]);
+          configStore[id(key)] = value;
+        },
+      };
+    },
+    onDidChangeConfiguration: (fn) => {
+      calls.push(['onDidChangeConfiguration', fn]);
+      return { dispose() {} };
+    },
+  },
 };
 
 const origResolve = Module._resolveFilename;
@@ -416,6 +441,52 @@ const ext = require('./extension.js');
       // pass as long as it did not throw.
       const errs = calls.filter(c => c[0] === 'showErrorMessage').slice(errsBefore);
       if (errs.length) failures.push(`picker: switching surfaces errored (${errs.map(e => e[1]).join(' | ')})`);
+
+      // FLAG_SECURE is a policy, not a property of one AVD, so it is not in the
+      // row menu: it is a setting, and the palette opens the same ticked picker
+      // the surfaces use. Two commands would need their own context key, and the
+      // palette cannot draw a tick on either of them.
+      const props = (pkg.contributes.configuration || {}).properties || {};
+      const flag = props['avdMirror.honourFlagSecure'];
+      if (!flag) failures.push('avdMirror.honourFlagSecure: not contributed');
+      else {
+        if (flag.type !== 'boolean') failures.push(`honourFlagSecure: type is ${flag.type}`);
+        if (flag.default !== false) {
+          failures.push(`honourFlagSecure: default is ${flag.default} - mirroring secure windows is the point of the extension`);
+        }
+      }
+      if (!commands.some(c => c.command === 'avdMirror.chooseFlagSecure')) {
+        failures.push('avdMirror.chooseFlagSecure: not contributed');
+      }
+      const flagMenu = itemMenuAll.find(m => m.command === 'avdMirror.chooseFlagSecure');
+      if (flagMenu) failures.push('chooseFlagSecure: in the row menu - it is not a property of one AVD');
+      if ((pkg.contributes.menus.commandPalette || []).some(m => m.command === 'avdMirror.chooseFlagSecure')) {
+        failures.push('chooseFlagSecure: hidden from the palette, which is the only place it can be reached from');
+      }
+      if (!run('avdMirror.chooseFlagSecure')) failures.push('avdMirror.chooseFlagSecure: not registered');
+
+      // Drive it: the value in force is the ticked row, the codicons are real,
+      // and the answer is written back as the global setting the server reads.
+      const picksBefore = calls.filter(c => c[0] === 'showQuickPick').length;
+      configStore['avdMirror.honourFlagSecure'] = false;
+      quickPickAnswers.push(items => items.find(i => i.value === true));
+      await run('avdMirror.chooseFlagSecure')();
+      const flagPick = calls.filter(c => c[0] === 'showQuickPick')[picksBefore];
+      if (!flagPick) failures.push('chooseFlagSecure: opened no picker');
+      else {
+        const items = flagPick[2];
+        if (items.length !== 2) failures.push(`chooseFlagSecure: expected 2 rows, got ${items.length}`);
+        if (!items.every(i => i.iconPath instanceof vscodeMock.ThemeIcon)) {
+          failures.push('chooseFlagSecure: a row has no codicon');
+        }
+        const off = items.find(i => i.value === false);
+        if (!off || off.picked !== true) failures.push('chooseFlagSecure: the value in force (off) is not ticked');
+      }
+      const wrote = configUpdates.pop();
+      if (!wrote || wrote[0] !== 'avdMirror.honourFlagSecure' || wrote[1] !== true
+          || wrote[2] !== vscodeMock.ConfigurationTarget.Global) {
+        failures.push(`chooseFlagSecure: wrote ${wrote ? wrote.join(',') : 'nothing'}`);
+      }
     } else {
       failures.push('tree: no AVD row');
     }
@@ -455,6 +526,25 @@ const ext = require('./extension.js');
   }
   if (!/if \(!want \|\| \(info && info\.build === want\)\) \{ avdPort = candidate; return candidate; \}/.test(extText)) {
     failures.push('pickAvdPort: adopts whatever answers on a candidate port without checking its build');
+  }
+
+  // FLAG_SECURE. The verdict has to come from the server, because the frames come
+  // straight from the capturer on 8778: the page never asks the server for a
+  // picture, so a server-side check alone could not stop one being shown, and a
+  // page-side guess alone would have nothing to go on.
+  const mirrorText = fs.readFileSync(path.join(__dirname, 'scripts/mirror.ps1'), 'utf8');
+  if (!/\$path -like '\/secure\*'/.test(mirrorText)) failures.push('mirror.ps1: no /secure endpoint to carry the policy');
+  if (!/function Test-FlagSecure/.test(mirrorText)) failures.push('mirror.ps1: no FLAG_SECURE detection');
+  if (!/'shell', 'dumpsys', 'window'\)/.test(mirrorText)) {
+    failures.push('mirror.ps1: FLAG_SECURE is not read from `dumpsys window` - the `windows` form prints no mCurrentFocus on Android 14');
+  }
+  const blanks = mirrorText.match(/if \(Test-FlagSecure\) \{ \$blank = 1 \}/g) || [];
+  if (blanks.length < 2) failures.push('mirror.ps1: /rot and the rotate reply do not both report the verdict');
+  if (!/id="secure"/.test(mirrorText)) failures.push('mirror.ps1: the page has no protected-content veil');
+  if (!/setProtected\(parts\[3\]==='1'\)/.test(mirrorText)) failures.push('mirror.ps1: the page ignores the verdict');
+  if (!/if\(!secureEl\.hidden\)/.test(mirrorText)) failures.push('mirror.ps1: the frame loop keeps fetching while protected');
+  if (!/\(touch\|input\|gsize\|window\|rot\|secure\|frame\\\.jpg\)/.test(extText)) {
+    failures.push('extension.js: the inlined page is not told where /rot and /secure live, so the panel cannot obey');
   }
 
   // And the live server, after activation had its chance to replace a stale one.

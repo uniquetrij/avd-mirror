@@ -127,6 +127,15 @@ $script:EmuLost = $false
 # LOCALAPPDATA, so it outlives a checkout, a rebuild and a VS Code update.
 $script:WindowStatePath = Join-Path $env:LOCALAPPDATA 'avd-mirror\window.json'
 
+# FLAG_SECURE policy. Off by default: the capture is host-side and shows secure
+# windows on purpose - that is the point of mirroring a banking app. Turning it
+# on makes the mirror behave the way a screenshot of the guest would, i.e. it
+# stops showing anything while a secure window is in front. The extension owns
+# the setting and pushes it here (/secure), so every surface agrees.
+$script:HonourSecure = $false
+$script:SecureNow = $false
+$script:SecureAt = [datetime]::MinValue
+
 # --- adb + emulator console --------------------------------------------------
 # Touch is injected through the emulator console ("event send") instead of
 # `adb shell input`: only the console can emit raw multi-touch (MT protocol B)
@@ -186,6 +195,59 @@ function Get-GuestRotation {
     if ($m.Success) { return [int]$m.Groups[1].Value }
   } catch { }
   return 0
+}
+
+# Is the window in front of the guest FLAG_SECURE?
+#
+# FLAG_SECURE is enforced inside the guest (SurfaceFlinger), and there is no
+# setting or property that relaxes it: `screencap` simply refuses, writing a
+# 0-byte file on Android 14, and a rooted framework patch is the only way to
+# turn it off. The host-side capture never asks the guest for a screenshot, so
+# it sees the pixels anyway - which is what makes an *option* possible here at
+# all: the mirror can choose to behave like the screenshot would.
+#
+# The flag shows up on the focused window's attrs:
+#   mCurrentFocus=Window{2f8a4c1 u0 com.tinder/...}
+#   Window #3 Window{2f8a4c1 u0 com.tinder/...}
+#     mAttrs=Window{...} ty=APPLICATION ... fl=LAYOUT_IN_SCREEN SECURE ...
+# so the window is located by the hash in mCurrentFocus and only that block is
+# searched. A `SECURE` line elsewhere (a hidden window, a system overlay) must
+# not blank the mirror.
+#
+# `dumpsys window`, not `dumpsys window windows`: the narrower form does not
+# print mCurrentFocus at all on Android 14 - it only has the per-window blocks,
+# so there was no way to say *which* window the SECURE line belonged to. The
+# full dump carries both sections and costs the same (~75 ms).
+#
+# That is far too much to pay per frame, so the answer is cached for a second
+# and only ever asked for when the user has turned the option on. Off, this
+# costs a single boolean test.
+function Test-FlagSecure {
+  if (-not $script:HonourSecure) { return $false }
+  if (([datetime]::UtcNow - $script:SecureAt).TotalMilliseconds -lt 1000) { return $script:SecureNow }
+  $script:SecureAt = [datetime]::UtcNow
+  $script:SecureNow = $false
+  try {
+    $lines = @(Invoke-Adb -Arguments @('shell', 'dumpsys', 'window'))
+    $hash = ''
+    foreach ($ln in $lines) {
+      $m = [regex]::Match($ln, 'mCurrentFocus=Window\{(\S+)')
+      if ($m.Success) { $hash = $m.Groups[1].Value; break }
+    }
+    # No focus (a headless or just-booted guest) means no secure window is up.
+    if (-not $hash) { return $false }
+    $inBlock = $false
+    foreach ($ln in $lines) {
+      if ($ln -match '^\s*Window #\d+ Window\{') {
+        $inBlock = $ln.Contains($hash)
+      }
+      elseif ($inBlock -and $ln -match '\bfl=.*\bSECURE\b') {
+        $script:SecureNow = $true
+        break
+      }
+    }
+  } catch { }
+  return $script:SecureNow
 }
 
 # Rotate the guest display. Two steps, and both are needed on this emulator:
@@ -1522,6 +1584,15 @@ $html = @'
   .noemu-box{max-width:34rem}
   .noemu-title{color:#d29922;font-size:15px;font-weight:600;margin-bottom:.45em}
   .noemu-hint{color:var(--vscode-descriptionForeground,#8b949e);font-size:12px;line-height:1.5}
+  /* The FLAG_SECURE veil. Same shape as the no-emulator notice and shown the
+     same way - instead of the frame, never over it, so the screen cannot be
+     mistaken for something live. It sits one layer above #noemu because
+     "protected" is the more specific of the two states. */
+  #secure{position:absolute;inset:0;z-index:6;display:flex;align-items:center;justify-content:center;
+   background:var(--bezel);padding:1.5rem;text-align:center}
+  #secure[hidden]{display:none}
+  #secure .noemu-title{color:#8b949e}
+  #secure code{font-family:var(--vscode-editor-font-family,monospace);font-size:11px}
   /* The help button is a flex sibling of the tool strip, pinned to the right of
      the toolbar row, and its popover is anchored to the top-right of the page.
 
@@ -1621,6 +1692,19 @@ $html = @'
          <div class="noemu-hint">Start an AVD from the AVD picker above, or from the AVD Mirror panel.</div>
        </div>
      </div>
+     <!-- Shown instead of the screen while the window in front of the guest sets
+          FLAG_SECURE and "Honour FLAG_SECURE" is on. The guest refuses to
+          screenshot such a window; honouring the flag is this page choosing to
+          do the same, so the mirror looks like a screenshot would. -->
+     <div id="secure" hidden>
+       <div class="noemu-box">
+         <div class="noemu-title">Protected content</div>
+         <div class="noemu-hint">The window in front sets FLAG_SECURE, so the guest would not let a
+           screenshot through. AVD Mirror is honouring that.<br>
+           Turn off <b>Honour FLAG_SECURE</b> (Command Palette, or the
+           <code>avdMirror.honourFlagSecure</code> setting) to mirror it anyway.</div>
+       </div>
+     </div>
      <div id="keylayer">
       <button id="pwr" data-nav="power" title="Power" aria-label="Power"><span>&#9211;</span></button>
       <button id="volup" class="volkey" data-nav="volup" title="Volume up" aria-label="Volume up"><span>+</span></button>
@@ -1636,7 +1720,8 @@ const img=document.getElementById('m'),st=document.getElementById('st'),
       srcEl=document.getElementById('src'),navbar=document.getElementById('navbar'),
       stage=document.getElementById('stage'),kl=document.getElementById('keylayer'),
       sqL=document.getElementById('sqL'),sqR=document.getElementById('sqR'),
-      noemuEl=document.getElementById('noemu'),statusEl=document.getElementById('status');
+      noemuEl=document.getElementById('noemu'),statusEl=document.getElementById('status'),
+      secureEl=document.getElementById('secure');
 
 // One place sets the status line, so the dot and the text can never disagree.
 // `idle` is neutral rather than an error: red is reserved for a lost connection,
@@ -1649,17 +1734,28 @@ function setStatus(text,state){
 // frame on screen was misleading - it looked like a live picture of an app that
 // had simply frozen. The on-screen keys are hidden with it, since they would
 // otherwise float over an empty area.
-function showNoEmulator(on){
-  if(noemuEl.hidden===!on) return;
-  noemuEl.hidden=!on;
-  kl.style.visibility=on?'hidden':'';
+function veilStage(el,on){
+  if(el.hidden===!on) return;
+  el.hidden=!on;
+  // Either veil hides the keys; only both off brings them back.
+  kl.style.visibility=(noemuEl.hidden&&secureEl.hidden)?'':'hidden';
   if(on){
     // Drop the stale frame so the stage is genuinely blank behind the warning.
     if(prev){ URL.revokeObjectURL(prev); prev=null; }
     img.removeAttribute('src');
     dim.textContent='';
-  patchCorners();          // the corner patches held pixels from that frame
+    fps.textContent='';      // no frames are arriving, so a frozen rate would lie
+    patchCorners();          // the corner patches held pixels from that frame
   }
+}
+function showNoEmulator(on){ veilStage(noemuEl,on); }
+// FLAG_SECURE, when the mirror is set to honour it: the window in front refuses
+// screenshots, so the mirror stops showing it rather than pretending otherwise.
+// Driven by the fifth field of /rot - the frames come straight from the
+// capturer, so this is the only thing that can stop them being painted.
+function setProtected(on){
+  veilStage(secureEl,on);
+  if(on) setStatus('protected content','idle');
 }
 // WGC (wgccap :8778) captures via Windows.Graphics.Capture - full rate even when
 // occluded. Falls back to PrintWindow (/frame.jpg) if wgccap isn't running, and
@@ -1712,6 +1808,10 @@ async function grab(url,since){
 }
 async function tick(){
   const tReq=performance.now(); let live=false, gotFrame=false;
+  // Honouring FLAG_SECURE with a secure window in front: ask for nothing at all,
+  // so the capturer is not even consulted and no secure pixels reach the page.
+  // The 1.5 s /rot poll is what lifts the veil again.
+  if(!secureEl.hidden){ setTimeout(tick,400); return; }
   try{
     let b=null, got=false, srcName='';
     // Skip the WGC attempt entirely while the server says the capturer is down,
@@ -1744,6 +1844,10 @@ async function tick(){
              mode='wgc'; fails=0; srcName='WGC'; capturerUp=true; wgcDownUntil=0; if(b2!==null) b=b2; }catch(e){}
       }
     }
+    // The FLAG_SECURE verdict can arrive while this frame is in flight - /rot is
+    // polled on its own timer - so the blob is dropped rather than painted
+    // behind the veil. Re-enter slowly; the /rot poll is what lifts the veil.
+    if(!secureEl.hidden){ setTimeout(tick,400); return; }
     // b===null means 304: the screen has not changed, so leave the decoded frame
     // on screen rather than re-decoding the same bytes. Only a genuine new frame
     // is counted and painted, so the fps readout is frames actually shown.
@@ -1804,13 +1908,16 @@ function note(msg){ inpEl.textContent=msg; }
 // with its keys already rotated to match the guest's current orientation.
 function adoptRot(s){
   // "WxH:R" and optionally "WxH:R:C", where C is the capturer's state (1 up,
-  // 0 down). Split on ':' rather than one big regex so the parts stay optional.
+  // 0 down), and then "WxH:R:C:P", where P is 1 while the mirror is honouring
+  // FLAG_SECURE and the window in front sets it. Split on ':' rather than one
+  // big regex so the parts stay optional.
   const parts=String(s).split(':');
   const wh=(parts[0]||'').match(/(\d+)x(\d+)/);
   if(!wh) return;
   GW=+wh[1]; GH=+wh[2];
   if(parts[1]!==undefined) ROT=(+parts[1])%4;
   if(parts[2]!==undefined) capturerUp=(+parts[2])===1;
+  if(parts[3]!==undefined) setProtected(parts[3]==='1');
 }
 // Rotation state, 0..3, pushed by the server and read back from /rot. Declared
 // up here with the other bindings because layoutNav() is called synchronously
@@ -2553,7 +2660,9 @@ while ($true) {
                   $err = ''
                   $cap = 0
                   if (Get-Process wgccap -ErrorAction SilentlyContinue) { $cap = 1 }
-                  $rotBody = $newSize + ':' + $parts[1] + ':' + $cap
+                  $blank = 0
+                  if (Test-FlagSecure) { $blank = 1 }
+                  $rotBody = $newSize + ':' + $parts[1] + ':' + $cap + ':' + $blank
                 }
                 else { $err = 'unknown input cmd' }
               } catch { $err = $_.Exception.Message }
@@ -2578,8 +2687,33 @@ while ($true) {
           # delay the no-emulator notice by seconds.
           $cap = 0
           if (Get-Process wgccap -ErrorAction SilentlyContinue) { $cap = 1 }
-          Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($reply + ':' + $cap))
+          # Fifth field: 1 while the mirror is honouring FLAG_SECURE and the
+          # window in front has it set. The page blanks itself on it - the frames
+          # come straight from the capturer, so this verdict is the only thing
+          # that can stop them being shown.
+          $blank = 0
+          if (Test-FlagSecure) { $blank = 1 }
+          Send-Bytes $stream '200 OK' 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes($reply + ':' + $cap + ':' + $blank))
         }
+    elseif ($path -like '/secure*') {
+      # /secure?honour=1|0|toggle -> the policy; no parameter only reports.
+      # The extension owns the setting (avdMirror.honourFlagSecure) and pushes it
+      # here, so the page, the panel and the browser tab all obey one switch.
+      $p = Get-QueryParams $path
+      if ($p.ContainsKey('honour')) {
+        $v = $p['honour']
+        if ($v -eq 'toggle') { $script:HonourSecure = -not $script:HonourSecure }
+        else { $script:HonourSecure = ($v -ne '0' -and $v -ne 'false') }
+        # Re-measure at once: turning it on must blank the mirror now, not on
+        # whatever the next cached poll would have been.
+        $script:SecureAt = [datetime]::MinValue
+      }
+      $sec = Test-FlagSecure
+      $h = if ($script:HonourSecure) { 'true' } else { 'false' }
+      $s = if ($sec) { 'true' } else { 'false' }
+      $body = '{"honour":' + $h + ',"secure":' + $s + '}'
+      Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
+    }
     elseif ($path -like '/build*') {
       # Which script is actually running. The extension hashes the copy it ships
       # and compares; a mismatch means this process predates the extension and
