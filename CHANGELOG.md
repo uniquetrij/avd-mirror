@@ -5,6 +5,24 @@ Notable changes to **AVD Mirror**. This project follows
 the minor version changes for anything that alters how the extension behaves,
 the patch version for fixes.
 
+## 0.3.48
+
+- **Show and Extended Controls put their window in front.** Restoring the parked
+  emulator only moved it back onto the desktop, behind the editor, and the
+  extended controls dialog was built behind whatever had focus — both were
+  "shown" without being seen. The server now raises the window through
+  `SetForegroundWindow`, which Windows refuses to a background process, so it
+  attaches its input queue to the foreground window's thread for the call and
+  falls back to a `HWND_TOPMOST`/`HWND_NOTOPMOST` bump; activation is granted to
+  the other thread, so the result is confirmed by polling for it rather than
+  trusting the return value. The status line only claims "in front" when the
+  server saw the window become the foreground window.
+- **Cold start fixed.** `Start-AvdAndWait` runs at startup when no emulator is
+  running, and it called `Invoke-Native`, which the script only defined further
+  down — a function is not callable before the script reaches it. The server died
+  on `Invoke-Native is not recognized` instead of starting the AVD; the helper is
+  now defined above its first caller.
+
 ## 0.3.47
 
 - **New button: Extended Controls.** An icon between the window switch and ⏹ on a

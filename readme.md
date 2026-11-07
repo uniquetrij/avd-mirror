@@ -96,14 +96,16 @@ installed VSIX.
    - **Hide Emulator Window** (or **Show Emulator Window** once it is parked) is
      an icon on the row itself, to the left of ▶/⏹, so the real emulator can be
      taken off the desktop without leaving the AVD row. It is offered only on a
-     running AVD, because a stopped one has no window to move. See [Hiding the
+     running AVD, because a stopped one has no window to move. **Show** puts the
+     window back in front, not merely back on the desktop. See [Hiding the
      emulator window](#hiding-the-emulator-window).
    - **Extended Controls** is the next icon along, between the window switch and
      ⏹: one click opens the emulator's own settings dialog (location, battery,
      cellular, snapshots, help) without digging it out of the emulator toolbar.
-     Stop stays to its right, so the destructive button is never the one a click
-     aimed past its neighbour lands on. The button is also in the Command Palette
-     as `AVD Mirror: Extended Controls`. See [Extended
+     The dialog comes to the front as it opens, so it is usable without hunting
+     for it on the desktop. Stop stays to its right, so the destructive button is
+     never the one a click aimed past its neighbour lands on. The button is also
+     in the Command Palette as `AVD Mirror: Extended Controls`. See [Extended
      controls](#extended-controls).
 4. Full height is one click away — the `⤢` action in the Screen tab's title bar,
    or `AVD Mirror: Open Full Screen (Editor Tab)`, opens the same mirror as an
@@ -135,7 +137,9 @@ embeds it.
 The **Hide** button in the mirror's toolbar, the **Hide Emulator Window** icon on
 an AVD row, or `AVD Mirror: Hide / Show Emulator Window` from the Command Palette
 takes the emulator off the desktop completely, and the mirror keeps running at
-full rate; **Show** puts it back exactly where it was. Every entry point lists only
+full rate; **Show** puts it back exactly where it was, and raises it above
+whatever was in front — a restored window that comes back behind the editor is
+no easier to find than a parked one. Every entry point lists only
 the direction that applies — **Hide** while the window is on the desktop, **Show**
 once it is parked — because they read the window's real state from the server
 rather than remembering what the extension last asked for.
@@ -196,8 +200,9 @@ Command Palette) opens the emulator's own settings dialog — location, battery,
 cellular, display, snapshots, help — without digging it out of the emulator's
 side toolbar. Clicking it again brings the dialog forward instead of closing it:
 the button says show, so a dialog that is already up, possibly behind the
-mirror, is what it makes visible. It works while the emulator window is parked,
-so the dialog can be used with nothing of the emulator on the desktop.
+mirror, is what it makes visible — and it is raised to the foreground, not just
+restored. It works while the emulator window is parked, so the dialog can be
+used with nothing of the emulator on the desktop.
 
 There is no way to ask for this over `adb`: `adb emu help` has no such verb, and
 the emulator's toolbar is custom-drawn, so there is no window handle to click

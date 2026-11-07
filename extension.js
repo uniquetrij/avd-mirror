@@ -1558,10 +1558,12 @@ async function moveEmulatorWindow(mode) {
     return;
   }
   setEmulatorHidden(!!body.hidden);
+  // Windows can refuse to hand the foreground to a background process, so the
+  // server reports whether it managed it; the window is back either way.
   vscode.window.setStatusBarMessage(
     body.hidden
       ? 'AVD Mirror: emulator window hidden - still mirroring'
-      : 'AVD Mirror: emulator window restored',
+      : 'AVD Mirror: emulator window restored' + (body.front ? ', in front' : ''),
     4000
   );
 }
@@ -1614,10 +1616,10 @@ async function showExtendedControls() {
     return;
   }
   if (body.ok) {
+    // 'focused' means the dialog was already up and has been raised again.
     vscode.window.setStatusBarMessage(
-      body.state === 'focused'
-        ? 'AVD Mirror: extended controls brought forward'
-        : 'AVD Mirror: extended controls opened',
+      `AVD Mirror: extended controls ${body.state === 'focused' ? 'raised' : 'opened'}` +
+      (body.front ? ' in front' : ''),
       4000
     );
     return;

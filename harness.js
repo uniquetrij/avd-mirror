@@ -610,9 +610,27 @@ const ext = require('./extension.js');
   if (!/Find-UiaById 'ExtendedControls'/.test(mirrorSrc)) {
     failures.push('mirror.ps1: does not look for the ExtendedControls window - it would open a second dialog');
   }
+  // Bringing a window forward is a separate call from moving it: the restore
+  // path deliberately does not activate, so without this "Show" leaves the
+  // emulator behind the editor and the dialog opens behind the mirror.
+  if (!/static bool BringToFront\(IntPtr hwnd\)/.test(mirrorSrc)) {
+    failures.push('mirror.ps1: no BringToFront - a restored window would land behind the editor');
+  }
+  if (!/lastFront = BringToFront\(hwnd\)/.test(mirrorSrc)) {
+    failures.push('mirror.ps1: the show path restores the window without raising it');
+  }
+  if (!/AttachThreadInput\(mine, fgThread, true\)/.test(mirrorSrc)) {
+    failures.push('mirror.ps1: SetForegroundWindow without AttachThreadInput - Windows refuses the call to a background process');
+  }
+  if (!/Set-UiaForeground \$dlg/.test(mirrorSrc)) {
+    failures.push('mirror.ps1: /controls opens the Extended Controls dialog without raising it');
+  }
   const extText = fs.readFileSync(path.join(__dirname, 'extension.js'), 'utf8');
   if (!/function scriptBuild\(/.test(extText)) failures.push('extension.js: no scriptBuild() to compare against');
   if (!/\/controls`/.test(extText)) failures.push('extension.js: never calls /controls - the extended controls button would do nothing');
+  if (!/body\.front/.test(extText)) {
+    failures.push('extension.js: reports a window as "in front" without asking the server whether it is');
+  }
   if (!/function listenerPid\(/.test(extText)) {
     failures.push('extension.js: no listenerPid() - a server older than the handshake reports no pid, so nothing could stop it');
   }

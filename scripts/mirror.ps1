@@ -580,17 +580,33 @@ function Find-UiaById {
   }
 }
 
+# Bring a UIA element's own window to the foreground. The emulator builds the
+# dialog from its background UI thread, so the invoke alone leaves it behind
+# whatever the user is looking at; UIA gives the HWND to fix that with the same
+# helper the emulator window's "Show" uses.
+function Set-UiaForeground {
+  param([System.Windows.Automation.AutomationElement]$Element)
+  if (-not $Element) { return $false }
+  try {
+    $h = [IntPtr]$Element.Current.NativeWindowHandle
+    if ($h -ne [IntPtr]::Zero) { return [EmuMirrorWin]::BringToFront($h) }
+    $Element.SetFocus()
+    return $true
+  } catch { return $false }
+}
+
 # Returns 'opened', 'focused', 'no-emulator', 'no-toolbar' or 'failed:<why>'.
 # 'focused' rather than toggling the dialog shut: the button says show, and a
 # dialog that is already up (possibly behind the mirror) is what the user wanted
 # to see.
 function Show-ExtendedControls {
+  $script:ControlsFront = $false
   if (-not $script:EmuProc -or $script:EmuProc.HasExited) { return 'no-emulator' }
   if (-not (Enable-Uia)) { return 'failed:no-uia' }
   try {
     $dlg = Find-UiaById 'ExtendedControls'
     if ($dlg) {
-      try { $dlg.SetFocus() } catch { }
+      $script:ControlsFront = Set-UiaForeground $dlg
       return 'focused'
     }
     # A freshly booted emulator builds its toolbar late, so wait rather than
@@ -601,7 +617,11 @@ function Show-ExtendedControls {
     $inv.Invoke()
     # Invoke() only posts the click, and the dialog is built by the emulator's UI
     # thread, so give it a moment before calling it a failure.
-    if (Find-UiaById 'ExtendedControls' 2500) { return 'opened' }
+    $dlg = Find-UiaById 'ExtendedControls' 2500
+    if ($dlg) {
+      $script:ControlsFront = Set-UiaForeground $dlg
+      return 'opened'
+    }
     return 'failed:no-dialog'
   } catch {
     # The message goes straight into a JSON string, so keep it free of quotes
@@ -879,9 +899,13 @@ public static class EmuMirrorWin
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hwnd);
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hwnd, int index);
     [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr hwnd, int index, int value);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, IntPtr pid);
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint attach, uint attachTo, bool on);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
 
     // Shell taskbar list. Used only to add/remove this window's taskbar button:
     // the window itself stays composed, so the capture is untouched.
@@ -908,14 +932,83 @@ public static class EmuMirrorWin
     const int  WS_EX_TOOLWINDOW = 0x00000080;
     const int  SW_RESTORE    = 9;
     const int  SW_SHOWNOACTIVATE = 8;
+    static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
     const int  SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77;
     const int  SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
 
     static RECT lastNormal; static bool haveLast;
+    // "shown" promises the window is back on screen, not that it is in front of
+    // the editor, and Windows can refuse the activation. The last show reports
+    // which of the two happened so a caller can tell.
+    public static bool lastFront;
     // A window that is already in the foreground when it is parked must not be
     // mistaken for the user clicking its way back: only a foreground change
     // *after* parking (they focused something else, then this window again) is.
     static bool sawFgOther;
+
+    // --- foreground ----------------------------------------------------------
+    // Bringing a window forward is not the same call as moving it: the restore
+    // path uses SWP_NOZORDER|SWP_NOACTIVATE, so a "shown" emulator comes back
+    // *behind* whatever the user was looking at, and an Extended Controls dialog
+    // the emulator builds from its own background UI thread lands the same way.
+    //
+    // SetForegroundWindow is refused to a process that is not already the
+    // foreground one - the mirror server never is, VS Code is - and a refused
+    // call only flashes the taskbar button. Attaching to the input queues is the
+    // standard way round that: while attached, this thread is treated as one of
+    // them for the duration of the call, so both the foreground thread and the
+    // target window's own thread are attached. If even that is refused the
+    // window is raised in the z-order instead, which is visible even when
+    // Windows keeps the activation for itself.
+    public static bool BringToFront(IntPtr hwnd)
+    {
+        try
+        {
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return false;
+            if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+            if (AtForeground(hwnd, 0)) return true;
+            SetForegroundWindow(hwnd);
+            if (AtForeground(hwnd, 250)) return true;
+
+            uint mine = GetCurrentThreadId();
+            IntPtr fg = GetForegroundWindow();
+            uint fgThread = fg == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fg, IntPtr.Zero);
+            uint tgtThread = GetWindowThreadProcessId(hwnd, IntPtr.Zero);
+            bool a1 = fgThread != 0 && fgThread != mine && AttachThreadInput(mine, fgThread, true);
+            bool a2 = tgtThread != 0 && tgtThread != mine && tgtThread != fgThread &&
+                      AttachThreadInput(mine, tgtThread, true);
+            try
+            {
+                BringWindowToTop(hwnd);
+                SetForegroundWindow(hwnd);
+            }
+            finally
+            {
+                if (a2) AttachThreadInput(mine, tgtThread, false);
+                if (a1) AttachThreadInput(mine, fgThread, false);
+            }
+            if (AtForeground(hwnd, 250)) return true;
+
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            return false;
+        }
+        catch { return false; }
+    }
+
+    // Activation is granted to the *other* thread, so it shows up in
+    // GetForegroundWindow only once that thread has run: checking the instant
+    // SetForegroundWindow returns reports a failure for a raise that worked.
+    static bool AtForeground(IntPtr hwnd, int waitMs)
+    {
+        for (int waited = 0; ; waited += 15)
+        {
+            if (GetForegroundWindow() == hwnd) return true;
+            if (waited >= waitMs) return false;
+            System.Threading.Thread.Sleep(15);
+        }
+    }
 
     // User Alt-Tabs / taskbar-clicks an off-screen window -> put it back where it was.
     static void Track(IntPtr hwnd)
@@ -1176,6 +1269,10 @@ public static class EmuMirrorWin
                               target.R - target.L, target.B - target.T,
                               SWP_NOZORDER | SWP_NOACTIVATE)) return "failed:SetWindowPos";
             ParkState(false, target, true);
+            // "Show" means show me, not "put it back somewhere behind the editor":
+            // the move above deliberately does not activate, so the window is
+            // raised and focused here.
+            lastFront = BringToFront(hwnd);
             return "shown";
         }
         catch (Exception ex) { return "failed:" + ex.GetType().Name; }
@@ -2374,7 +2471,8 @@ hideBtn.addEventListener('click',async()=>{
       emuHidden=!!j.hidden;
     } else {
       emuHidden=!!j.hidden;
-      note(emuHidden?'emulator window hidden - still mirroring':'emulator window restored');
+      note(emuHidden?'emulator window hidden - still mirroring'
+                    :(j.front?'emulator window restored in front':'emulator window restored'));
     }
   }catch(e){ note('window toggle failed'); }
   finally{ paintHide(); hideBtn.disabled=false; }
@@ -2822,7 +2920,8 @@ while ($true) {
       } catch { $state = 'failed:' + $_.Exception.Message; $ok = $false }
       if ($state -eq 'no-emulator') { $ok = $false }
       $body = '{"ok":' + $(if ($ok) { 'true' } else { 'false' }) + ',"state":"' + $state +
-              '","hidden":' + $(if ($state -eq 'hidden') { 'true' } else { 'false' }) + '}'
+              '","hidden":' + $(if ($state -eq 'hidden') { 'true' } else { 'false' }) +
+              '","front":' + $(if ($state -eq 'shown' -and [EmuMirrorWin]::lastFront) { 'true' } else { 'false' }) + '}'
       Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
     }
     elseif ($path -like '/controls*') {
@@ -2831,7 +2930,8 @@ while ($true) {
       # toolbar through UI Automation - see Show-ExtendedControls.
       $state = Show-ExtendedControls
       $ok = -not ($state.StartsWith('failed') -or $state -eq 'no-emulator' -or $state -eq 'no-toolbar')
-      $body = '{"ok":' + $(if ($ok) { 'true' } else { 'false' }) + ',"state":"' + $state + '"}'
+      $body = '{"ok":' + $(if ($ok) { 'true' } else { 'false' }) + ',"state":"' + $state +
+              '","front":' + $(if ($script:ControlsFront) { 'true' } else { 'false' }) + '}'
       Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
     }
     elseif ($path -like '/gsize*') {
