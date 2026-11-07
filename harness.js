@@ -206,8 +206,28 @@ const ext = require('./extension.js');
   // only in the direction that is already true: asking the server to "show" a
   // window it reports as shown is a no-op on screen, and still proves the round
   // trip, the answer being read back and the message path.
-  const win = await fetch('http://127.0.0.1:8777/window?state=1', { cache: 'no-store' })
-    .then(r => r.json()).catch(() => null);
+  //
+  // An unparseable answer is a failure, not a reason to skip: the checks above
+  // already require the server to be up, and swallowing this is how a malformed
+  // reply ("hidden":false","front":...) shipped - the probe failed to parse, the
+  // whole block was skipped, and the harness still said "failures: none".
+  let win = null;
+  try {
+    const res = await fetch('http://127.0.0.1:8777/window?state=1', { cache: 'no-store' });
+    const text = await res.text();
+    try {
+      win = JSON.parse(text);
+    } catch (e) {
+      failures.push(`/window?state=1: server answered with invalid JSON (${text})`);
+    }
+  } catch (e) {
+    failures.push(`/window?state=1: ${e && e.message ? e.message : e}`);
+  }
+  if (win) {
+    for (const key of ['ok', 'hidden', 'front']) {
+      if (typeof win[key] !== 'boolean') failures.push(`/window?state=1: "${key}" is not a boolean (${JSON.stringify(win)})`);
+    }
+  }
   if (win && win.state === 'shown') {
     const errsBefore = calls.filter(c => c[0] === 'showErrorMessage').length;
     await call('avdMirror.showEmulatorWindow');

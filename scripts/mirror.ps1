@@ -2919,9 +2919,16 @@ while ($true) {
         }
       } catch { $state = 'failed:' + $_.Exception.Message; $ok = $false }
       if ($state -eq 'no-emulator') { $ok = $false }
-      $body = '{"ok":' + $(if ($ok) { 'true' } else { 'false' }) + ',"state":"' + $state +
-              '","hidden":' + $(if ($state -eq 'hidden') { 'true' } else { 'false' }) +
-              '","front":' + $(if ($state -eq 'shown' -and [EmuMirrorWin]::lastFront) { 'true' } else { 'false' }) + '}'
+      # ConvertTo-Json, not string concatenation: the hand-built body here had a
+      # stray quote in it ("hidden":false","front":...), so every reply to this
+      # route - and the page and the extension both parse it - was a syntax
+      # error. Escaping and commas are the serializer's job.
+      $body = ConvertTo-Json -Compress -InputObject ([ordered]@{
+        ok     = $ok
+        state  = $state
+        hidden = ($state -eq 'hidden')
+        front  = ($state -eq 'shown' -and [EmuMirrorWin]::lastFront)
+      })
       Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
     }
     elseif ($path -like '/controls*') {
@@ -2930,8 +2937,11 @@ while ($true) {
       # toolbar through UI Automation - see Show-ExtendedControls.
       $state = Show-ExtendedControls
       $ok = -not ($state.StartsWith('failed') -or $state -eq 'no-emulator' -or $state -eq 'no-toolbar')
-      $body = '{"ok":' + $(if ($ok) { 'true' } else { 'false' }) + ',"state":"' + $state +
-              '","front":' + $(if ($script:ControlsFront) { 'true' } else { 'false' }) + '}'
+      $body = ConvertTo-Json -Compress -InputObject ([ordered]@{
+        ok    = $ok
+        state = $state
+        front = [bool]$script:ControlsFront
+      })
       Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
     }
     elseif ($path -like '/gsize*') {

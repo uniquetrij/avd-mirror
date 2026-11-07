@@ -5,6 +5,19 @@ Notable changes to **AVD Mirror**. This project follows
 the minor version changes for anything that alters how the extension behaves,
 the patch version for fixes.
 
+## 0.3.49
+
+- **Fixed: every `/window` reply was invalid JSON.** The body was assembled by
+  hand and carried a stray quote — `"hidden":false","front":true` — so the
+  extension's fetch failed to parse it and reported `mirror server unreachable`
+  on **Show Emulator Window** (and on **Hide**), even though the window moved
+  and the server was answering. Both that route and `/controls` now serialize
+  with `ConvertTo-Json`, which owns the commas and the escaping.
+- The harness no longer *skips* the live window switch when the server's answer
+  cannot be parsed: it records a failure. That skip is why this shipped — the
+  probe returned `null`, the whole block was skipped, and the run still said
+  `failures: none`. It now also asserts `ok`, `hidden` and `front` are booleans.
+
 ## 0.3.48
 
 - **Show and Extended Controls put their window in front.** Restoring the parked
