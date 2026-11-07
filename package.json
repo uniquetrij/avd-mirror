@@ -2,7 +2,7 @@
   "name": "avd-mirror",
   "displayName": "AVD Mirror",
   "description": "Mirror the Android emulator screen into a VS Code panel and drive it with real multi-touch.",
-  "version": "0.3.45",
+  "version": "0.3.46",
   "publisher": "uniquetrij",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -197,12 +197,12 @@
         {
           "command": "avdMirror.hideEmulatorWindow",
           "when": "view == avdMirror.avds && (viewItem == avdRunning || viewItem == avdRunningMirrored) && !avdMirror.emulatorHidden",
-          "group": "inline@2"
+          "group": "inline@1"
         },
         {
           "command": "avdMirror.showEmulatorWindow",
           "when": "view == avdMirror.avds && (viewItem == avdRunning || viewItem == avdRunningMirrored) && avdMirror.emulatorHidden",
-          "group": "inline@2"
+          "group": "inline@1"
         },
         {
           "command": "avdMirror.selectAvd",
@@ -212,12 +212,12 @@
         {
           "command": "avdMirror.startAvd",
           "when": "view == avdMirror.avds && (viewItem == avdIdle || viewItem == avdIdleMirrored)",
-          "group": "inline@1"
+          "group": "inline@2"
         },
         {
           "command": "avdMirror.stopAvd",
           "when": "view == avdMirror.avds && (viewItem == avdRunning || viewItem == avdRunningMirrored)",
-          "group": "inline@1"
+          "group": "inline@2"
         },
         {
           "command": "avdMirror.forceStopAvd",

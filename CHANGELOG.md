@@ -5,6 +5,13 @@ Notable changes to **AVD Mirror**. This project follows
 the minor version changes for anything that alters how the extension behaves,
 the patch version for fixes.
 
+## 0.3.46
+
+- **The window switch moved left of power.** Both inline actions spend the row's
+  hover strip, and order there is the `@N` suffix, not the order they appear in
+  the manifest: the window pair is now `inline@1` and start/stop `inline@2`, so
+  the icon you reach for while the AVD keeps running is not the one that ends it.
+
 ## 0.3.45
 
 - **The emulator window switch is on the row only.** 0.3.44 also put it in the

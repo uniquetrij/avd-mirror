@@ -325,10 +325,10 @@ const ext = require('./extension.js');
       if (stray.length) failures.push(`title bar carries per-item buttons: ${stray.map(m => m.command).join(', ')}`);
       if (!title.some(m => m.command === 'avdMirror.refreshAvds')) failures.push('title bar lost avdMirror.refreshAvds');
 
-      // Power is a button on the row, in the first inline slot, gated so a start
-      // only appears on a stopped AVD and a stop only on a running one. Force
-      // stop stays in the row menu: it is the rare, destructive one, and giving
-      // it an icon beside the everyday stop invites the wrong click.
+      // Power is a button on the row, gated so a start only appears on a stopped
+      // AVD and a stop only on a running one. Force stop stays in the row menu: it
+      // is the rare, destructive one, and giving it an icon beside the everyday
+      // stop invites the wrong click.
       const itemMenu = pkg.contributes.menus['view/item/context'] || [];
       const power = [
         ['avdMirror.startAvd', /viewItem == avdIdle/, 'starts only an AVD that is not running'],
@@ -337,7 +337,7 @@ const ext = require('./extension.js');
       for (const [cmd, gate, why] of power) {
         const m = itemMenu.find(x => x.command === cmd);
         if (!m) { failures.push(`${cmd}: not offered on the row`); continue; }
-        if (m.group !== 'inline@1') failures.push(`${cmd}: expected inline@1, got ${m.group}`);
+        if (m.group !== 'inline@2') failures.push(`${cmd}: expected inline@2, got ${m.group}`);
         if (!gate.test(m.when || '')) failures.push(`${cmd}: ${why}, but the gate is "${m.when}"`);
       }
       const force = itemMenu.find(x => x.command === 'avdMirror.forceStopAvd');
@@ -349,9 +349,11 @@ const ext = require('./extension.js');
       }
 
       // The emulator's own window is an icon on the row - a context-menu row can
-      // draw no codicon, which is the whole reason it moved there. The pair lists
-      // only the direction that applies, so it must be gated on its own state key,
-      // and only a running AVD has a window to move.
+      // draw no codicon, which is the whole reason it moved there - and it sits in
+      // the *first* inline slot, left of power: the window is the thing you move
+      // out of the way, so it comes before the button that ends the AVD. The pair
+      // lists only the direction that applies, so it must be gated on its own
+      // state key, and only a running AVD has a window to move.
       const emu = [
         ['avdMirror.hideEmulatorWindow', /!avdMirror\.emulatorHidden/, '$(empty-window)', 'not-yet-hidden'],
         ['avdMirror.showEmulatorWindow', /(^|[^!])avdMirror\.emulatorHidden/, '$(window)', 'hidden'],
@@ -359,7 +361,7 @@ const ext = require('./extension.js');
       for (const [cmd, gate, glyph, side] of emu) {
         const m = itemMenu.find(x => x.command === cmd);
         if (!m) { failures.push(`${cmd}: not offered on the row`); continue; }
-        if (m.group !== 'inline@2') failures.push(`${cmd}: expected group inline@2, got ${m.group}`);
+        if (m.group !== 'inline@1') failures.push(`${cmd}: expected group inline@1, got ${m.group}`);
         if (!/viewItem == avdRunning/.test(m.when || '')) failures.push(`${cmd}: offered on an AVD with no window (${m.when})`);
         if (!gate.test(m.when || '')) failures.push(`${cmd}: not gated on the ${side} state (${m.when})`);
         const declared = (pkg.contributes.commands || []).find(c => c.command === cmd);
@@ -368,6 +370,19 @@ const ext = require('./extension.js');
         if (!palette || palette.when !== 'false') failures.push(`${cmd}: listed in the palette - the state-aware pair belongs on a row, the palette keeps the toggle`);
       }
       if (!itemMenu.some(m => m.command === 'avdMirror.hideEmulatorWindow')) failures.push('the row lost the emulator window switch');
+
+      // Order inside the strip is the `@N` suffix, so the numbers - not the
+      // contribution order - decide which icon the user hits first.
+      const orderOf = cmd => {
+        const m = itemMenu.find(x => x.command === cmd);
+        const n = m && /\d+/.exec(m.group || '');
+        return n ? Number(n[0]) : NaN;
+      };
+      const windowSlot = Math.min(orderOf('avdMirror.hideEmulatorWindow'), orderOf('avdMirror.showEmulatorWindow'));
+      const powerSlot = Math.min(orderOf('avdMirror.startAvd'), orderOf('avdMirror.stopAvd'));
+      if (!(windowSlot < powerSlot)) {
+        failures.push(`window switch is not left of power (window inline@${windowSlot}, power inline@${powerSlot})`);
+      }
 
       // The icon pair is only as good as the key behind it: `avdMirror.emulatorHidden`
       // has to be set from the server's own answer, and only a boolean closes the

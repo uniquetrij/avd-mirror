@@ -94,10 +94,10 @@ installed VSIX.
      the AVD the mirror is showing, so the keyboard route and the row menu cannot
      drift apart.
    - **Hide Emulator Window** (or **Show Emulator Window** once it is parked) is
-     an icon on the row itself, next to ▶/⏹, so the real emulator can be taken off
-     the desktop without leaving the AVD row. It is offered only on a running AVD,
-     because a stopped one has no window to move. See [Hiding the emulator
-     window](#hiding-the-emulator-window).
+     an icon on the row itself, to the left of ▶/⏹, so the real emulator can be
+     taken off the desktop without leaving the AVD row. It is offered only on a
+     running AVD, because a stopped one has no window to move. See [Hiding the
+     emulator window](#hiding-the-emulator-window).
 4. Full height is one click away — the `⤢` action in the Screen tab's title bar,
    or `AVD Mirror: Open Full Screen (Editor Tab)`, opens the same mirror as an
    editor tab.
