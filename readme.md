@@ -98,6 +98,13 @@ installed VSIX.
      taken off the desktop without leaving the AVD row. It is offered only on a
      running AVD, because a stopped one has no window to move. See [Hiding the
      emulator window](#hiding-the-emulator-window).
+   - **Extended Controls** is the next icon along, between the window switch and
+     ⏹: one click opens the emulator's own settings dialog (location, battery,
+     cellular, snapshots, help) without digging it out of the emulator toolbar.
+     Stop stays to its right, so the destructive button is never the one a click
+     aimed past its neighbour lands on. The button is also in the Command Palette
+     as `AVD Mirror: Extended Controls`. See [Extended
+     controls](#extended-controls).
 4. Full height is one click away — the `⤢` action in the Screen tab's title bar,
    or `AVD Mirror: Open Full Screen (Editor Tab)`, opens the same mirror as an
    editor tab.
@@ -181,6 +188,25 @@ there" made a hide last about a second: the window came back onto the desktop,
 behind everything, with its taskbar entry already deleted — visible only until
 another window covered it, and with the menu offering **Hide** because the
 server reported what it saw rather than what was asked for.
+
+### Extended controls
+
+**Extended Controls** on an AVD row (also `AVD Mirror: Extended Controls` in the
+Command Palette) opens the emulator's own settings dialog — location, battery,
+cellular, display, snapshots, help — without digging it out of the emulator's
+side toolbar. Clicking it again brings the dialog forward instead of closing it:
+the button says show, so a dialog that is already up, possibly behind the
+mirror, is what it makes visible. It works while the emulator window is parked,
+so the dialog can be used with nothing of the emulator on the desktop.
+
+There is no way to ask for this over `adb`: `adb emu help` has no such verb, and
+the emulator's toolbar is custom-drawn, so there is no window handle to click
+either. The server therefore drives the toolbar through UI Automation — the
+`more` button on it (`AutomationId` `ToolControls.more_button`) opens the dialog,
+which arrives as a top-level window with `AutomationId` `ExtendedControls`. That
+means the emulator has to be reachable by UI Automation from the extension's
+process: one running elevated, or as another user, exposes no toolbar, and the
+command says so instead of failing silently.
 
 ### Honouring `FLAG_SECURE`
 

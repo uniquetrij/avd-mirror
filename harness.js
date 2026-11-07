@@ -184,6 +184,23 @@ const ext = require('./extension.js');
   console.log('has toggleHide:', !!run('avdMirror.toggleHide'));
   console.log('has hideEmulatorWindow:', !!run('avdMirror.hideEmulatorWindow'));
   console.log('has showEmulatorWindow:', !!run('avdMirror.showEmulatorWindow'));
+  // extendedControls is not invoked either: on a machine with a live emulator it
+  // would pop the dialog on screen, which is exactly the sort of side effect a
+  // test must not have. Registration is what can be checked safely.
+  console.log('has extendedControls:', !!run('avdMirror.extendedControls'));
+  if (!run('avdMirror.extendedControls')) failures.push('avdMirror.extendedControls: not registered');
+  // ...and it is only *driven* when asked to, because a run against a live
+  // emulator would pop the Extended Controls dialog on screen:
+  //   AVDM_LIVE_CONTROLS=1 node harness.js
+  if (process.env.AVDM_LIVE_CONTROLS === '1') {
+    const errsBefore = calls.filter(c => c[0] === 'showErrorMessage').length;
+    await call('avdMirror.extendedControls');
+    const msg = calls.filter(c => c[0] === 'setStatusBarMessage').pop();
+    console.log(`  extendedControls -> ${msg ? msg[1] : 'no status message'}`);
+    if (calls.filter(c => c[0] === 'showErrorMessage').length > errsBefore) {
+      failures.push('extendedControls: errored against a live server');
+    }
+  }
 
   // The emulator switch is the only command that moves a real window, so it runs
   // only in the direction that is already true: asking the server to "show" a
@@ -328,7 +345,9 @@ const ext = require('./extension.js');
       // Power is a button on the row, gated so a start only appears on a stopped
       // AVD and a stop only on a running one. Force stop stays in the row menu: it
       // is the rare, destructive one, and giving it an icon beside the everyday
-      // stop invites the wrong click.
+      // stop invites the wrong click. Stop keeps the rightmost slot even after
+      // extended controls arrived, so the destructive button is never the one a
+      // click aimed past its neighbour lands on.
       const itemMenu = pkg.contributes.menus['view/item/context'] || [];
       const power = [
         ['avdMirror.startAvd', /viewItem == avdIdle/, 'starts only an AVD that is not running'],
@@ -337,15 +356,18 @@ const ext = require('./extension.js');
       for (const [cmd, gate, why] of power) {
         const m = itemMenu.find(x => x.command === cmd);
         if (!m) { failures.push(`${cmd}: not offered on the row`); continue; }
-        if (m.group !== 'inline@2') failures.push(`${cmd}: expected inline@2, got ${m.group}`);
+        if (m.group !== (cmd === 'avdMirror.stopAvd' ? 'inline@3' : 'inline@2')) {
+          failures.push(`${cmd}: expected ${cmd === 'avdMirror.stopAvd' ? 'inline@3' : 'inline@2'}, got ${m.group}`);
+        }
         if (!gate.test(m.when || '')) failures.push(`${cmd}: ${why}, but the gate is "${m.when}"`);
       }
       const force = itemMenu.find(x => x.command === 'avdMirror.forceStopAvd');
       if (force && /inline/.test(force.group || '')) failures.push(`forceStopAvd: inline (${force.group}) - too easy to hit next to Stop`);
       const inlineStrip = itemMenu.filter(m => /^inline@/.test(m.group || ''));
-      if (inlineStrip.length !== 4 || inlineStrip.some(m => !/^avdMirror\.(start|stop)Avd$/.test(m.command)
-        && !/^avdMirror\.(hide|show)EmulatorWindow$/.test(m.command))) {
-        failures.push(`inline strip should hold only power and the window switch, has ${inlineStrip.map(m => m.command).join(', ')}`);
+      if (inlineStrip.length !== 5 || inlineStrip.some(m => !/^avdMirror\.(start|stop)Avd$/.test(m.command)
+        && !/^avdMirror\.(hide|show)EmulatorWindow$/.test(m.command)
+        && m.command !== 'avdMirror.extendedControls')) {
+        failures.push(`inline strip should hold only power, the window switch and extended controls, has ${inlineStrip.map(m => m.command).join(', ')}`);
       }
 
       // The emulator's own window is an icon on the row - a context-menu row can
@@ -371,6 +393,28 @@ const ext = require('./extension.js');
       }
       if (!itemMenu.some(m => m.command === 'avdMirror.hideEmulatorWindow')) failures.push('the row lost the emulator window switch');
 
+      // Extended Controls is the third button on a running row. The emulator's
+      // settings dialog has no console command and its toolbar is custom-drawn,
+      // so the server drives the toolbar through UI Automation (/controls). Only
+      // a running AVD has a window with a toolbar, and unlike the window pair
+      // this is a plain action, not a two-direction state pair, so it stays in
+      // the palette as well.
+      const ext = itemMenu.find(m => m.command === 'avdMirror.extendedControls');
+      if (!ext) {
+        failures.push('avdMirror.extendedControls: not offered on the row');
+      } else {
+        if (ext.group !== 'inline@2') failures.push(`avdMirror.extendedControls: expected group inline@2, got ${ext.group}`);
+        if (!/viewItem == avdRunning/.test(ext.when || '')) failures.push(`avdMirror.extendedControls: offered on an AVD with no window (${ext.when})`);
+      }
+      const extDecl = (pkg.contributes.commands || []).find(c => c.command === 'avdMirror.extendedControls');
+      if (!extDecl) failures.push('avdMirror.extendedControls: no command contribution');
+      else if (!/^\$\([a-z0-9-]+\)$/.test(extDecl.icon || '')) {
+        failures.push(`avdMirror.extendedControls: no codicon (${extDecl.icon}) - a mistyped name renders a blank button`);
+      }
+      if ((pkg.contributes.menus.commandPalette || []).some(x => x.command === 'avdMirror.extendedControls')) {
+        failures.push('avdMirror.extendedControls: hidden from the palette - it is an action, not a per-row state pair');
+      }
+
       // Order inside the strip is the `@N` suffix, so the numbers - not the
       // contribution order - decide which icon the user hits first.
       const orderOf = cmd => {
@@ -379,9 +423,18 @@ const ext = require('./extension.js');
         return n ? Number(n[0]) : NaN;
       };
       const windowSlot = Math.min(orderOf('avdMirror.hideEmulatorWindow'), orderOf('avdMirror.showEmulatorWindow'));
-      const powerSlot = Math.min(orderOf('avdMirror.startAvd'), orderOf('avdMirror.stopAvd'));
+      const extSlot = orderOf('avdMirror.extendedControls');
+      // Start and stop never share a row, so the slot that decides the order is
+      // the one drawn beside the window switch on a running row: stop.
+      const powerSlot = orderOf('avdMirror.stopAvd');
       if (!(windowSlot < powerSlot)) {
         failures.push(`window switch is not left of power (window inline@${windowSlot}, power inline@${powerSlot})`);
+      }
+      // Extended controls sits between them, so power keeps the rightmost slot:
+      // overshooting the destructive button must land on nothing.
+      if (!(windowSlot < extSlot && extSlot < powerSlot)) {
+        failures.push(`extended controls is not between the window switch and power `
+          + `(window inline@${windowSlot}, controls inline@${extSlot}, power inline@${powerSlot})`);
       }
 
       // The icon pair is only as good as the key behind it: `avdMirror.emulatorHidden`
@@ -543,8 +596,23 @@ const ext = require('./extension.js');
     if (!/\$script:BuildId\s*=/.test(text)) failures.push(`${label}: no build id - a stale process would stay undetectable`);
     if (!/\$path -like '\/build\*'/.test(text)) failures.push(`${label}: no /build endpoint to report it`);
   }
+  // Extended Controls has no console command, so the server reaches the emulator
+  // toolbar through UI Automation. Those two AutomationIds are the whole
+  // contract: the toolbar's "more" button opens the dialog, and the dialog's id
+  // is how an already-open one is recognised instead of clicked shut.
+  const mirrorSrc = fs.readFileSync(path.join(__dirname, 'scripts/mirror.ps1'), 'utf8');
+  if (!/\$path -like '\/controls\*'/.test(mirrorSrc)) {
+    failures.push('mirror.ps1: no /controls route - the extended controls button would 404');
+  }
+  if (!/ToolControls\.more_button/.test(mirrorSrc)) {
+    failures.push('mirror.ps1: no UI Automation handle on the emulator toolbar (ToolControls.more_button)');
+  }
+  if (!/Find-UiaById 'ExtendedControls'/.test(mirrorSrc)) {
+    failures.push('mirror.ps1: does not look for the ExtendedControls window - it would open a second dialog');
+  }
   const extText = fs.readFileSync(path.join(__dirname, 'extension.js'), 'utf8');
   if (!/function scriptBuild\(/.test(extText)) failures.push('extension.js: no scriptBuild() to compare against');
+  if (!/\/controls`/.test(extText)) failures.push('extension.js: never calls /controls - the extended controls button would do nothing');
   if (!/function listenerPid\(/.test(extText)) {
     failures.push('extension.js: no listenerPid() - a server older than the handshake reports no pid, so nothing could stop it');
   }

@@ -538,6 +538,73 @@ function Ensure-Capturer {
   } catch { $script:CapFailAt = [datetime]::UtcNow }
 }
 
+# --- extended controls -------------------------------------------------------
+# The emulator's "Extended Controls" dialog has no console command - `adb emu
+# help` lists nothing of the sort - and its toolbar is custom-drawn Qt, so there
+# is no HWND to click either. UI Automation is the only handle: the toolbar
+# exposes a button with AutomationId 'ToolControls.more_button', and the dialog
+# it opens arrives as a top-level window with AutomationId 'ExtendedControls'.
+#
+# Two traps. The toolbar is not a child of the desktop - it is nested inside the
+# emulator window - so its buttons are only found by walking Descendants from the
+# root; a Children scan finds nothing. And the dialog's own close button ignores
+# InvokePattern, so closing it takes WindowPattern.Close().
+$script:UiaReady = $false
+function Enable-Uia {
+  if ($script:UiaReady) { return $true }
+  try {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
+    $script:UiaReady = $true
+  } catch { }
+  return $script:UiaReady
+}
+
+# UIA has no id-scoped search, so this filters the whole tree. It costs tens of
+# milliseconds and only runs when the user asks for the dialog.
+function Find-UiaById {
+  param([string]$Id, [int]$TimeoutMs = 0)
+  $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+  while ($true) {
+    $cond = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::AutomationIdProperty, $Id)
+    $el = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
+      [System.Windows.Automation.TreeScope]::Descendants, $cond)
+    if ($el) { return $el }
+    if ($TimeoutMs -le 0 -or (Get-Date) -ge $deadline) { return $null }
+    Start-Sleep -Milliseconds 150
+  }
+}
+
+# Returns 'opened', 'focused', 'no-emulator', 'no-toolbar' or 'failed:<why>'.
+# 'focused' rather than toggling the dialog shut: the button says show, and a
+# dialog that is already up (possibly behind the mirror) is what the user wanted
+# to see.
+function Show-ExtendedControls {
+  if (-not $script:EmuProc -or $script:EmuProc.HasExited) { return 'no-emulator' }
+  if (-not (Enable-Uia)) { return 'failed:no-uia' }
+  try {
+    $dlg = Find-UiaById 'ExtendedControls'
+    if ($dlg) {
+      try { $dlg.SetFocus() } catch { }
+      return 'focused'
+    }
+    # A freshly booted emulator builds its toolbar late, so wait rather than
+    # reporting no-toolbar at the one moment the button is most likely used.
+    $more = Find-UiaById 'ToolControls.more_button' 3000
+    if (-not $more) { return 'no-toolbar' }
+    $inv = $more.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $inv.Invoke()
+    # Invoke() only posts the click, and the dialog is built by the emulator's UI
+    # thread, so give it a moment before calling it a failure.
+    if (Find-UiaById 'ExtendedControls' 2500) { return 'opened' }
+    return 'failed:no-dialog'
+  } catch {
+    # The message goes straight into a JSON string, so keep it free of quotes
+    # and newlines rather than escaping it here.
+    return 'failed:' + ($_.Exception.Message -replace '["\r\n]', ' ')
+  }
+}
+
 # --- touch engine: host pointer state -> MT protocol B events ----------------
 # The emulator's touch panel reports 0..32767 on both axes, scaled to the
 # display, so guest pixels are converted with (px * 32767 / (dim - 1)).
@@ -2751,6 +2818,15 @@ while ($true) {
       if ($state -eq 'no-emulator') { $ok = $false }
       $body = '{"ok":' + $(if ($ok) { 'true' } else { 'false' }) + ',"state":"' + $state +
               '","hidden":' + $(if ($state -eq 'hidden') { 'true' } else { 'false' }) + '}'
+      Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
+    }
+    elseif ($path -like '/controls*') {
+      # /controls -> open (or raise) the emulator's Extended Controls dialog.
+      # No console command exists for it, so this drives the emulator's own
+      # toolbar through UI Automation - see Show-ExtendedControls.
+      $state = Show-ExtendedControls
+      $ok = -not ($state.StartsWith('failed') -or $state -eq 'no-emulator' -or $state -eq 'no-toolbar')
+      $body = '{"ok":' + $(if ($ok) { 'true' } else { 'false' }) + ',"state":"' + $state + '"}'
       Send-Bytes $stream '200 OK' 'application/json' ([System.Text.Encoding]::UTF8.GetBytes($body))
     }
     elseif ($path -like '/gsize*') {

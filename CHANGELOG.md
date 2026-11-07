@@ -5,6 +5,23 @@ Notable changes to **AVD Mirror**. This project follows
 the minor version changes for anything that alters how the extension behaves,
 the patch version for fixes.
 
+## 0.3.47
+
+- **New button: Extended Controls.** An icon between the window switch and ⏹ on a
+  running AVD row (`AVD Mirror: Extended Controls` in the palette) opens the
+  emulator's own settings dialog — location, battery, cellular, snapshots, help.
+  There is no `adb emu` command for it and the emulator's toolbar is custom-drawn,
+  so the server drives that toolbar through UI Automation: it invokes the `more`
+  button (`AutomationId` `ToolControls.more_button`) and waits for the dialog
+  window (`AutomationId` `ExtendedControls`) to appear. Asking again raises a
+  dialog that is already open rather than toggling it shut.
+- Stop moved to `inline@3` to make room, so the destructive button keeps the
+  rightmost slot — a click that overshoots its neighbour cannot land on it.
+- The dialog opens with the emulator window parked, so it can be used with
+  nothing of the emulator on the desktop. An emulator running elevated or as
+  another user exposes no toolbar to UI Automation; the command says so instead
+  of failing quietly.
+
 ## 0.3.46
 
 - **The window switch moved left of power.** Both inline actions spend the row's

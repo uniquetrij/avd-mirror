@@ -1596,6 +1596,49 @@ async function syncEmulatorHidden() {
 }
 
 /**
+ * Open the emulator's own "Extended Controls" dialog.
+ *
+ * There is no console command for it - `adb emu help` has none - and the
+ * emulator's toolbar is custom-drawn, so the server drives it through UI
+ * Automation (see Show-ExtendedControls in mirror.ps1). All this does is ask.
+ */
+async function showExtendedControls() {
+  let body;
+  try {
+    const res = await fetch(`http://${HOST}:${PORT}/controls`, { cache: 'no-store' });
+    body = await res.json();
+  } catch (e) {
+    vscode.window.showErrorMessage(
+      `AVD Mirror: mirror server unreachable (${e && e.message ? e.message : e})`
+    );
+    return;
+  }
+  if (body.ok) {
+    vscode.window.setStatusBarMessage(
+      body.state === 'focused'
+        ? 'AVD Mirror: extended controls brought forward'
+        : 'AVD Mirror: extended controls opened',
+      4000
+    );
+    return;
+  }
+  if (body.state === 'no-emulator') {
+    vscode.window.setStatusBarMessage('AVD Mirror: no emulator to open controls on', 3000);
+    return;
+  }
+  if (body.state === 'no-toolbar') {
+    // The toolbar is part of the emulator process, so an emulator owned by
+    // another user (or one running elevated) is invisible to this one.
+    vscode.window.showWarningMessage(
+      "AVD Mirror: cannot reach the emulator's own toolbar - if the emulator runs " +
+      'elevated or as another user, open Extended Controls from the emulator instead'
+    );
+    return;
+  }
+  vscode.window.showWarningMessage(`AVD Mirror: cannot open extended controls (${body.state})`);
+}
+
+/**
  * Hand the FLAG_SECURE policy to the mirror server.
  *
  * The policy lives in one place - the server - because every surface shows the
@@ -1733,6 +1776,7 @@ function activate(context) {
     vscode.commands.registerCommand('avdMirror.hideEmulatorWindow', () => moveEmulatorWindow(true)),
     vscode.commands.registerCommand('avdMirror.showEmulatorWindow', () => moveEmulatorWindow(false)),
     vscode.commands.registerCommand('avdMirror.toggleHide', () => moveEmulatorWindow('toggle')),
+    vscode.commands.registerCommand('avdMirror.extendedControls', showExtendedControls),
     vscode.commands.registerCommand('avdMirror.chooseFlagSecure', chooseFlagSecure),
     output
   );
