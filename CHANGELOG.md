@@ -5,6 +5,14 @@ Notable changes to **AVD Mirror**. This project follows
 the minor version changes for anything that alters how the extension behaves,
 the patch version for fixes.
 
+## 0.3.45
+
+- **The emulator window switch is on the row only.** 0.3.44 also put it in the
+  AVDs title bar; two buttons for one state, with no way to tell which was
+  current, was one too many. `avdMirror.emulatorWindow` and the `/window?state=1`
+  plumbing that fed it are gone with it — the row already knows whether the AVD
+  is running, and the title bar is back to **Refresh** alone.
+
 ## 0.3.44
 
 - **Hide/Show Emulator Window moved inline.** It was a right-click entry on the

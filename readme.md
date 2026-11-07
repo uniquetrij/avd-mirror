@@ -94,10 +94,9 @@ installed VSIX.
      the AVD the mirror is showing, so the keyboard route and the row menu cannot
      drift apart.
    - **Hide Emulator Window** (or **Show Emulator Window** once it is parked) is
-     an icon on the row itself, next to ▶/⏹, and a button in the AVDs view's
-     title bar, so the real emulator can be taken off the desktop without leaving
-     the AVD row. It is offered only on a running AVD, because a stopped one has
-     no window to move. See [Hiding the emulator
+     an icon on the row itself, next to ▶/⏹, so the real emulator can be taken off
+     the desktop without leaving the AVD row. It is offered only on a running AVD,
+     because a stopped one has no window to move. See [Hiding the emulator
      window](#hiding-the-emulator-window).
 4. Full height is one click away — the `⤢` action in the Screen tab's title bar,
    or `AVD Mirror: Open Full Screen (Editor Tab)`, opens the same mirror as an
@@ -127,16 +126,12 @@ embeds it.
 ### Hiding the emulator window
 
 The **Hide** button in the mirror's toolbar, the **Hide Emulator Window** icon on
-an AVD row, the same button in the AVDs view's title bar, or `AVD Mirror: Hide /
-Show Emulator Window` from the Command Palette takes the emulator off the desktop
-completely, and the mirror keeps running at full rate; **Show** puts it back
-exactly where it was. Every surface lists only the direction that applies —
-**Hide** while the window is on the desktop, **Show** once it is parked — because
-they read the window's real state from the server rather than remembering what
-the extension last asked for. The title bar has no row to read that state from,
-so the server's answer is mirrored into an `avdMirror.emulatorWindow` context key
-alongside `avdMirror.emulatorHidden`; without the first, the button would offer to
-hide a window that is not there.
+an AVD row, or `AVD Mirror: Hide / Show Emulator Window` from the Command Palette
+takes the emulator off the desktop completely, and the mirror keeps running at
+full rate; **Show** puts it back exactly where it was. Every entry point lists only
+the direction that applies — **Hide** while the window is on the desktop, **Show**
+once it is parked — because they read the window's real state from the server
+rather than remembering what the extension last asked for.
 
 "Hiding" is three changes to the window, none of which touches the DWM surface
 the capture reads (measured: frames keep arriving with all three applied):
@@ -154,8 +149,8 @@ frames in 3 s hidden, ~53 fps parked). Minimizing is therefore also treated as
 the same two shell changes.
 
 Since the parked window has no taskbar button and no Alt-Tab entry, the only way
-back is **Show** in the mirror toolbar, the AVD row or title bar, or the Command
-Palette command.
+back is **Show** in the mirror toolbar, the AVD row, or the Command Palette
+command.
 
 The parked state is remembered, in
 `%LOCALAPPDATA%\avd-mirror\window.json`:
